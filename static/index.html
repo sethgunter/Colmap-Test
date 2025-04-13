@@ -1,16 +1,28 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video to 3D Reconstruction</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #container { width: 100%; height: 100vh; display: none; }
+        #interface { position: absolute; top: 10px; left: 10px; background: rgba(255, 255, 255, 0.8); padding: 10px; }
+        #message { margin-top: 10px; }
+        canvas { display: block; }
+    </style>
 </head>
 <body>
-    <h1>Video to 3D Reconstruction</h1>
-    <input type="file" id="videoInput" accept="video/*">
-    <button id="processButton">Process Video</button>
-    <p id="message">Please wait while FFmpeg loads...</p>
-    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <div id="interface">
+        <input type="file" id="videoInput" accept="video/*">
+        <button id="processButton" disabled>Process Video</button>
+        <div id="message">Loading FFmpeg...</div>
+        <button id="showModelButton" style="display: none;">Show Model</button>
+        <button id="downloadButton" style="display: none;">Download Results</button>
+    </div>
+    <div id="container"></div>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.0/dist/ffmpeg.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/loaders/PLYLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
     <script src="/static/index.js"></script>
 </body>
 </html>

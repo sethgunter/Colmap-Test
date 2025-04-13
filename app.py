@@ -29,6 +29,11 @@ def serve_static(path):
     logger.debug(f"Attempting to serve static file: {path}")
     return app.send_static_file(path)
 
+@app.route('/output/<path:path>')
+def serve_output(path):
+    logger.debug(f"Attempting to serve output file: {path}")
+    return send_file(os.path.join('/app/colmap_project', path))
+
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
@@ -88,8 +93,8 @@ def process_video():
             '--ImageReader.camera_params', '1,960,480',  # focal_length=1, cx=960, cy=480 for 1920x960
             '--ImageReader.single_camera', '1',
             '--SiftExtraction.use_gpu', '0',
-            '--SiftExtraction.peak_threshold', '0.0005',
-            '--SiftExtraction.max_num_features', '10000',
+            '--SiftExtraction.peak_threshold', '0.0001',
+            '--SiftExtraction.max_num_features', '11000',
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
         ], check=True, capture_output=True, text=True)
@@ -192,12 +197,19 @@ def process_video():
                 logger.warning("camera_poses.json not found, skipping")
 
         zip_buffer.seek(0)
-        return send_file(
-            zip_buffer,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name='reconstruction_bundle.zip'
-        )
+        # Save zip_buffer to a temporary file for response
+        zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
+        with open(zip_temp_path, 'wb') as f:
+            f.write(zip_buffer.getvalue())
+
+        # Return JSON response with paths for webview
+        return {
+            'status': 'success',
+            'message': 'Processing complete',
+            'ply_path': '/output/sparse.ply',
+            'poses_path': '/output/camera_poses.json',
+            'zip_path': '/output/reconstruction_bundle.zip'
+        }, 200
 
     except subprocess.CalledProcessError as e:
         logger.error(f"COLMAP command failed: stdout={e.stdout}, stderr={e.stderr}")
