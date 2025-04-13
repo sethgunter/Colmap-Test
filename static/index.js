@@ -43,6 +43,10 @@ function initThreeJS(plyPath, posesPath) {
     let sceneCenter = new THREE.Vector3(0, 0, 0);
     let sceneExtent = 1;
 
+    // Create a group to hold points and cameras
+    const group = new THREE.Group();
+    scene.add(group);
+
     // Load point cloud
     const loader = new THREE.PLYLoader();
     loader.load(plyPath, (geometry) => {
@@ -66,7 +70,7 @@ function initThreeJS(plyPath, posesPath) {
         sceneCenter.set(median(coords.x), median(coords.y), median(coords.z));
         points.position.sub(sceneCenter);
 
-        scene.add(points);
+        group.add(points);
 
         // Scene extent (IQR)
         const iqr = (arr) => {
@@ -90,14 +94,11 @@ function initThreeJS(plyPath, posesPath) {
                 const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
 
                 for (const [_, pose] of Object.entries(poses)) {
-                    const pos = new THREE.Vector3(pose.tx, pose.ty, pose.tz);
-                    pos.sub(sceneCenter); // Center
-
                     // Invert pose (world-to-camera to camera-to-world)
                     const q = new THREE.Quaternion(pose.qx, pose.qy, pose.qz, pose.qw);
-                    const qInv = q.clone().conjugate(); // Inverse quaternion
+                    const qInv = q.clone().conjugate();
                     const t = new THREE.Vector3(pose.tx, pose.ty, pose.tz);
-                    const tInv = t.clone().negate().applyQuaternion(qInv); // -R^T * t
+                    const tInv = t.clone().applyQuaternion(qInv).negate();
                     tInv.sub(sceneCenter);
 
                     // Cone
@@ -105,17 +106,20 @@ function initThreeJS(plyPath, posesPath) {
                     cone.position.copy(tInv);
                     cone.setRotationFromQuaternion(qInv);
                     cone.rotateX(Math.PI / 2); // Align cone
-                    scene.add(cone);
+                    group.add(cone);
 
                     // Sphere
                     const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
                     sphere.position.copy(tInv);
-                    scene.add(sphere);
+                    group.add(sphere);
                 }
 
-                // Camera view: Map COLMAP Y-up to Three.js Z-up
+                // Rotate entire group 180° around X-axis
+                group.rotation.x = Math.PI; // Map COLMAP Y-up to Three.js Z-up
+
+                // Camera view: Standard Three.js Z-up
                 camera.position.set(0, 0, sceneExtent * 2); // Above
-                camera.up.set(0, 1, 0); // Y-up to align COLMAP
+                camera.up.set(0, 1, 0); // Standard Z-up
                 camera.lookAt(0, 0, 0);
             })
             .catch(error => console.error('Poses load error:', error));
