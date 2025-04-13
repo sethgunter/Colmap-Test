@@ -50,7 +50,7 @@ function initThreeJS(plyPath, posesPath) {
         const material = new THREE.PointsMaterial({ size: 0.02, vertexColors: true });
         const points = new THREE.Points(geometry, material);
 
-        // Robust centering: Median to avoid outliers
+        // Median centering
         const positions = geometry.attributes.position.array;
         const coords = { x: [], y: [], z: [] };
         for (let i = 0; i < positions.length; i += 3) {
@@ -64,8 +64,11 @@ function initThreeJS(plyPath, posesPath) {
             return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
         };
         sceneCenter.set(median(coords.x), median(coords.y), median(coords.z));
+        points.position.sub(sceneCenter);
 
-        // Scene extent: IQR for core data
+        scene.add(points);
+
+        // Scene extent (IQR)
         const iqr = (arr) => {
             const sorted = [...arr].sort((a, b) => a - b);
             const q1 = sorted[Math.floor(sorted.length * 0.25)];
@@ -73,11 +76,6 @@ function initThreeJS(plyPath, posesPath) {
             return q3 - q1;
         };
         sceneExtent = Math.max(iqr(coords.x), iqr(coords.y), iqr(coords.z)) * 1.5;
-
-        // Center point cloud (no scaling)
-        points.position.sub(sceneCenter);
-        //points.rotation.z = -Math.PI; // -90 degrees around X-axis
-        scene.add(points);
 
         console.log('Scene center:', sceneCenter);
         console.log('Scene extent:', sceneExtent);
@@ -88,26 +86,36 @@ function initThreeJS(plyPath, posesPath) {
             .then(poses => {
                 const coneGeometry = new THREE.ConeGeometry(0.05, 0.2, 8);
                 const coneMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-                const sphereGeometry = new THREE.SphereGeometry(sceneExtent * 0.01, 8, 8); // 1% of extent
+                const sphereGeometry = new THREE.SphereGeometry(sceneExtent * 0.01, 8, 8);
                 const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
 
                 for (const [_, pose] of Object.entries(poses)) {
                     const pos = new THREE.Vector3(pose.tx, pose.ty, pose.tz);
-                    pos.sub(sceneCenter); // Same centering
+                    pos.sub(sceneCenter); // Center
 
+                    // Invert pose (world-to-camera to camera-to-world)
+                    const q = new THREE.Quaternion(pose.qx, pose.qy, pose.qz, pose.qw);
+                    const qInv = q.clone().conjugate(); // Inverse quaternion
+                    const t = new THREE.Vector3(pose.tx, pose.ty, pose.tz);
+                    const tInv = t.clone().negate().applyQuaternion(qInv); // -R^T * t
+                    tInv.sub(sceneCenter);
+
+                    // Cone
                     const cone = new THREE.Mesh(coneGeometry, coneMaterial);
-                    cone.position.copy(pos);
-                    const quaternion = new THREE.Quaternion(pose.qx, pose.qy, pose.qz, pose.qw);
-                    cone.setRotationFromQuaternion(quaternion);
-                    cone.rotateX(Math.PI / 2);
+                    cone.position.copy(tInv);
+                    cone.setRotationFromQuaternion(qInv);
+                    cone.rotateX(Math.PI / 2); // Align cone
                     scene.add(cone);
 
+                    // Sphere
                     const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-                    sphere.position.copy(pos);
+                    sphere.position.copy(tInv);
                     scene.add(sphere);
                 }
 
-                camera.position.set(0, 0, sceneExtent * 2);
+                // Camera view: Map COLMAP Y-up to Three.js Z-up
+                camera.position.set(0, 0, sceneExtent * 2); // Above
+                camera.up.set(0, 1, 0); // Y-up to align COLMAP
                 camera.lookAt(0, 0, 0);
             })
             .catch(error => console.error('Poses load error:', error));
