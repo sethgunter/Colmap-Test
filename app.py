@@ -108,6 +108,14 @@ def process_video():
             '--database_path', database_path,
             '--SequentialMatching.overlap', '5',
             '--SequentialMatching.quadratic_overlap', '0',
+            '--SequentialMatching.loop_detection', '1',
+            '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
+            '--SequentialMatching.loop_detection_period', '10',
+            '--SequentialMatching.loop_detection_num_images', '50',
+            '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
+            '--SequentialMatching.loop_detection_num_checks', '256',
+            '--SequentialMatching.loop_detection_num_images_after_verification', '0',
+            '--SequentialMatching.loop_detection_max_num_features', '-1',
             '--SiftMatching.use_gpu', '0',
             '--SiftMatching.min_num_inliers', '30'
         ], check=True, capture_output=True, text=True)

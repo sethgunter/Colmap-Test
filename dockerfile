@@ -46,6 +46,9 @@ COPY --from=builder /colmap-install/ /usr/local/
 WORKDIR /app
 COPY app.py .
 COPY static/ static/
+COPY vocab_tree.bin /app/vocab_tree.bin
+RUN chmod 644 /app/vocab_tree.bin
+
 
 # Verify static files
 RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/index.html
