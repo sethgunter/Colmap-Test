@@ -110,7 +110,7 @@ def process_video():
             '--SequentialMatching.quadratic_overlap', '0',
             '--SequentialMatching.loop_detection', '1',
             '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
-            '--SequentialMatching.loop_detection_period', '10',
+            '--SequentialMatching.loop_detection_period', '20',
             '--SequentialMatching.loop_detection_num_images', '50',
             '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
             '--SequentialMatching.loop_detection_num_checks', '256',

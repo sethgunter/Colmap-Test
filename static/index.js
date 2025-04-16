@@ -164,7 +164,7 @@ async function processVideo() {
 
     try {
         ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
-        await ffmpeg.run('-i', 'input.mp4', '-r', '3', '-vf', 'scale=1920:960', 'frame_%04d.jpg');
+        await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1920:960', 'frame_%04d.jpg');
 
         const frames = [];
         const files = ffmpeg.FS('readdir', '/');
