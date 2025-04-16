@@ -1,6 +1,6 @@
 # Builder stage
 ARG UBUNTU_VERSION=22.04
-ARG CUDA_VERSION=12.2.2
+ARG CUDA_VERSION=11.5.2
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
