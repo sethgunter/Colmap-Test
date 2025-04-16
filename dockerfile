@@ -1,7 +1,7 @@
-ARG UBUNTU_VERSION=22.04
-
 # Builder stage
-FROM ubuntu:${UBUNTU_VERSION} AS builder
+ARG UBUNTU_VERSION=22.04
+ARG CUDA_VERSION=12.2.2
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -12,20 +12,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libeigen3-dev libflann-dev libfreeimage-dev libmetis-dev \
     libgoogle-glog-dev libgtest-dev libgmock-dev libsqlite3-dev libglew-dev \
     qtbase5-dev libqt5opengl5-dev libcgal-dev libceres-dev libcurl4-openssl-dev \
-    python3 python3-pip python3-dev && \
+    python3 python3-pip python3-dev \
+    cuda-cudart-dev-${CUDA_VERSION} cuda-libraries-dev-${CUDA_VERSION} && \
     rm -rf /var/lib/apt/lists/*
 
-# Build SphereSfM (integrated with COLMAP)
+# Build SphereSfM (integrated with COLMAP) with CUDA support
 RUN git clone https://github.com/json87/SphereSfM.git colmap && \
     cd colmap && \
     git checkout main && \
     mkdir build && cd build && \
-    cmake .. -GNinja -DCMAKE_INSTALL_PREFIX=/colmap-install && \
+    cmake .. -GNinja -DCMAKE_INSTALL_PREFIX=/colmap-install -DCUDA_ENABLED=ON && \
     ninja install && \
     rm -rf /colmap
 
 # Runtime stage
-FROM ubuntu:${UBUNTU_VERSION}
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -33,7 +34,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-program-options1.74.0 libboost-filesystem1.74.0 libc6 libceres2 libfreeimage3 libgcc-s1 \
     libgl1 libglew2.2 libgoogle-glog0v5 libqt5core5a libqt5gui5 libqt5widgets5 \
-    libcurl4 python3 python3-pip xvfb libx11-6 libxext6 libxrender1 x11-utils && \
+    libcurl4 python3 python3-pip xvfb libx11-6 libxext6 libxrender1 x11-utils \
+    cuda-cudart-${CUDA_VERSION} cuda-libraries-${CUDA_VERSION} && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -49,9 +51,12 @@ COPY static/ static/
 COPY vocab_tree.bin /app/vocab_tree.bin
 RUN chmod 644 /app/vocab_tree.bin
 
-
 # Verify static files
 RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/index.html
+
+# Set environment variables for CUDA
+ENV NVIDIA_VISIBLE_DEVICES all
+ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 
 # Expose port
 EXPOSE 8080

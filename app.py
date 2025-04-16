@@ -46,6 +46,7 @@ def process_video():
     images_dir = os.path.join(base_dir, 'images')
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
+    dense_dir = os.path.join(base_dir, 'dense')
     poses_dir = os.path.join(base_dir, 'poses')
 
     # Clean up previous runs
@@ -53,6 +54,7 @@ def process_video():
         shutil.rmtree(base_dir)
     os.makedirs(images_dir)
     os.makedirs(sparse_dir)
+    os.makedirs(dense_dir)
     os.makedirs(poses_dir, exist_ok=True)
 
     # Save uploaded frames
@@ -71,7 +73,7 @@ def process_video():
             logger.error(f"Failed to save frame {frame.filename}: {str(e)}")
             return f"Failed to save frame {frame.filename}: {str(e)}", 500
 
-    # COLMAP processing pipeline with SphereSfM parameters
+    # COLMAP processing pipeline with SphereSfM parameters and CUDA support
     try:
         # 1. Create database
         logger.debug("Creating database")
@@ -82,7 +84,7 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Database creation output: {result.stdout}")
 
-        # 2. Feature extraction
+        # 2. Feature extraction (GPU-enabled)
         logger.debug("Running feature extraction")
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -90,9 +92,10 @@ def process_video():
             '--database_path', database_path,
             '--image_path', images_dir,
             '--ImageReader.camera_model', 'SPHERE',
-            '--ImageReader.camera_params', '1,960,480',  # focal_length=1, cx=960, cy=480 for 1920x960
+            '--ImageReader.camera_params', '1,960,480',
             '--ImageReader.single_camera', '1',
-            '--SiftExtraction.use_gpu', '0',
+            '--SiftExtraction.use_gpu', '1',
+            '--SiftExtraction.gpu_index', '0',
             '--SiftExtraction.peak_threshold', '0.0001',
             '--SiftExtraction.max_num_features', '11000',
             '--SiftExtraction.estimate_affine_shape', '1',
@@ -100,7 +103,7 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Feature extraction output: {result.stdout}")
 
-        # 3. Feature matching
+        # 3. Feature matching (GPU-enabled)
         logger.debug("Running feature matching")
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -116,7 +119,8 @@ def process_video():
             '--SequentialMatching.loop_detection_num_checks', '256',
             '--SequentialMatching.loop_detection_num_images_after_verification', '0',
             '--SequentialMatching.loop_detection_max_num_features', '-1',
-            '--SiftMatching.use_gpu', '0',
+            '--SiftMatching.use_gpu', '1',
+            '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '30'
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Feature matching output: {result.stdout}")
@@ -146,7 +150,52 @@ def process_video():
             logger.error("Sparse model not found")
             return "Sparse reconstruction failed, no model generated", 500
 
-        # 5. Export camera poses
+        # 5. Dense reconstruction
+        logger.debug("Running dense reconstruction")
+        # 5.1. Image undistortion
+        result = subprocess.run([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'image_undistorter',
+            '--image_path', images_dir,
+            '--input_path', sparse_model_dir,
+            '--output_path', dense_dir,
+            '--output_type', 'COLMAP',
+            '--max_image_size', '2000'
+        ], check=True, capture_output=True, text=True)
+        logger.debug(f"Image undistortion output: {result.stdout}")
+
+        # 5.2. Patch match stereo (GPU-enabled)
+        result = subprocess.run([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'patch_match_stereo',
+            '--workspace_path', dense_dir,
+            '--workspace_format', 'COLMAP',
+            '--PatchMatchStereo.gpu_index', '0',
+            '--PatchMatchStereo.max_image_size', '2000',
+            '--PatchMatchStereo.window_radius', '5',
+            '--PatchMatchStereo.num_samples', '15',
+            '--PatchMatchStereo.num_iterations', '5'
+        ], check=True, capture_output=True, text=True)
+        logger.debug(f"Patch match stereo output: {result.stdout}")
+
+        # 5.3. Stereo fusion
+        output_dense_ply = os.path.join(dense_dir, 'fused.ply')
+        result = subprocess.run([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'stereo_fusion',
+            '--workspace_path', dense_dir,
+            '--workspace_format', 'COLMAP',
+            '--input_type', 'geometric',
+            '--output_path', output_dense_ply,
+            '--StereoFusion.min_num_pixels', '5'
+        ], check=True, capture_output=True, text=True)
+        logger.debug(f"Stereo fusion output: {result.stdout}")
+
+        if not os.path.exists(output_dense_ply):
+            logger.error("Dense point cloud file not found")
+            return "Dense reconstruction failed, no point cloud generated", 500
+
+        # 6. Export camera poses
         logger.debug("Exporting camera poses")
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -160,8 +209,8 @@ def process_video():
         # Parse images.txt to create camera_poses.json
         poses_json_path = os.path.join(base_dir, 'camera_poses.json')
         try:
-            with open(os.path.join(poses_dir, 'images.txt')) as f:
-                lines = f.readlines()[4::2]  # Skip header, take image lines
+            with open(os.path.join(poses_dir, 'txt/images.txt')) as f:
+                lines = f.readlines()[4::2]
                 poses = {}
                 for line in lines:
                     parts = line.strip().split()
@@ -175,37 +224,40 @@ def process_video():
             logger.error(f"Failed to parse camera poses: {str(e)}")
             return f"Failed to parse camera poses: {str(e)}", 500
 
-        # 6. Export sparse point cloud as PLY
+        # 7. Export sparse point cloud as PLY
         logger.debug("Exporting sparse point cloud")
-        output_ply = os.path.join(base_dir, 'sparse.ply')
+        output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'model_converter',
             '--input_path', sparse_model_dir,
-            '--output_path', output_ply,
+            '--output_path', output_sparse_ply,
             '--output_type', 'PLY'
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Point cloud export output: {result.stdout}")
 
-        if not os.path.exists(output_ply):
-            logger.error("Point cloud file not found")
-            return "Point cloud export failed", 500
+        if not os.path.exists(output_sparse_ply):
+            logger.error("Sparse point cloud file not found")
+            return "Sparse point cloud export failed", 500
 
         # Create a proper zip archive
         logger.debug("Creating zip archive")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            if os.path.exists(output_ply):
-                zip_file.write(output_ply, 'sparse.ply')
+            if os.path.exists(output_sparse_ply):
+                zip_file.write(output_sparse_ply, 'sparse.ply')
             else:
                 logger.warning("sparse.ply not found, skipping")
+            if os.path.exists(output_dense_ply):
+                zip_file.write(output_dense_ply, 'dense.ply')
+            else:
+                logger.warning("dense.ply not found, skipping")
             if os.path.exists(poses_json_path):
                 zip_file.write(poses_json_path, 'camera_poses.json')
             else:
                 logger.warning("camera_poses.json not found, skipping")
 
         zip_buffer.seek(0)
-        # Save zip_buffer to a temporary file for response
         zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
         with open(zip_temp_path, 'wb') as f:
             f.write(zip_buffer.getvalue())
@@ -214,7 +266,8 @@ def process_video():
         return {
             'status': 'success',
             'message': 'Processing complete',
-            'ply_path': '/output/sparse.ply',
+            'sparse_ply_path': '/output/sparse.ply',
+            'dense_ply_path': '/output/dense.ply',
             'poses_path': '/output/camera_poses.json',
             'zip_path': '/output/reconstruction_bundle.zip'
         }, 200
