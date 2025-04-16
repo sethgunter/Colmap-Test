@@ -1,19 +1,20 @@
 # Builder stage
 ARG UBUNTU_VERSION=22.04
 ARG CUDA_VERSION=11.5.2
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn8-devel-ubuntu${UBUNTU_VERSION} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's/archive.ubuntu.com/us.archive.ubuntu.com/' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     git cmake ninja-build build-essential \
     libboost-program-options-dev libboost-graph-dev libboost-system-dev libboost-filesystem-dev \
     libeigen3-dev libflann-dev libfreeimage-dev libmetis-dev \
     libgoogle-glog-dev libgtest-dev libgmock-dev libsqlite3-dev libglew-dev \
     qtbase5-dev libqt5opengl5-dev libcgal-dev libceres-dev libcurl4-openssl-dev \
     python3 python3-pip python3-dev \
-    cuda-cudart-dev-${CUDA_VERSION} cuda-libraries-dev-${CUDA_VERSION} && \
+    cuda-cudart-dev-11-5 cuda-libraries-dev-11-5 && \
     rm -rf /var/lib/apt/lists/*
 
 # Build SphereSfM (integrated with COLMAP) with CUDA support
@@ -26,16 +27,17 @@ RUN git clone https://github.com/json87/SphereSfM.git colmap && \
     rm -rf /colmap
 
 # Runtime stage
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn8-runtime-ubuntu${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's/archive.ubuntu.com/us.archive.ubuntu.com/' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     libboost-program-options1.74.0 libboost-filesystem1.74.0 libc6 libceres2 libfreeimage3 libgcc-s1 \
     libgl1 libglew2.2 libgoogle-glog0v5 libqt5core5a libqt5gui5 libqt5widgets5 \
     libcurl4 python3 python3-pip xvfb libx11-6 libxext6 libxrender1 x11-utils \
-    cuda-cudart-${CUDA_VERSION} cuda-libraries-${CUDA_VERSION} && \
+    cuda-cudart-11-5 cuda-libraries-11-5 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
