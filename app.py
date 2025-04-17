@@ -74,7 +74,7 @@ def check_resources():
         # Check disk space
         disk = shutil.disk_usage('/app')
         free_gb = disk.free / (1024**3)
-        if free_gb < 10:
+        if free_gb < 5:
             logger.error(f"Low disk space: {free_gb:.2f} GB available")
             return False, f"Low disk space: {free_gb:.2f} GB available"
 
