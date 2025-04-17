@@ -8,6 +8,8 @@ import json
 import zipfile
 import io
 import time
+import uuid
+import psutil
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -45,6 +47,21 @@ def serve_output(path):
     logger.debug(f"Attempting to serve output file: {path}")
     return send_file(os.path.join('/app/colmap_project', path))
 
+def terminate_child_processes():
+    """Terminate any child processes that might be holding files open."""
+    try:
+        current_process = psutil.Process()
+        children = current_process.children(recursive=True)
+        for child in children:
+            try:
+                logger.debug(f"Terminating child process {child.pid}")
+                child.terminate()
+                child.wait(timeout=3)
+            except (psutil.NoSuchProcess, psutil.TimeoutExpired) as e:
+                logger.warning(f"Failed to terminate child process {child.pid}: {e}")
+    except Exception as e:
+        logger.error(f"Error while terminating child processes: {e}")
+
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
@@ -52,8 +69,9 @@ def process_video():
         logger.error("No video provided in request")
         return "No video provided", 400
 
-    # Set up working directories
-    base_dir = '/app/colmap_project'
+    # Generate unique directory for this request
+    request_id = str(uuid.uuid4())
+    base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
     database_path = os.path.join(base_dir, 'database.db')
@@ -61,10 +79,11 @@ def process_video():
     dense_dir = os.path.join(base_dir, 'dense')
     poses_dir = os.path.join(base_dir, 'poses')
 
-    # Clean up previous runs with retry mechanism
+    # Clean up specific request directory if it exists (shouldn't normally exist)
     if os.path.exists(base_dir):
         for attempt in range(3):
             try:
+                terminate_child_processes()  # Terminate any lingering processes
                 shutil.rmtree(base_dir)
                 logger.debug(f"Successfully removed {base_dir}")
                 break
@@ -99,29 +118,37 @@ def process_video():
     # Extract frames using FFmpeg
     try:
         logger.debug("Extracting frames")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1280:720',
             os.path.join(images_dir, 'frame_%04d.jpg')
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Frame extraction output: {result.stdout}")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Frame extraction failed: {e.stderr}")
-        return f"Frame extraction failed: {e.stderr}", 500
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Frame extraction failed: {stderr}")
+            return f"Frame extraction failed: {stderr}", 500
+        logger.debug(f"Frame extraction output: {stdout}")
+    except Exception as e:
+        logger.error(f"Frame extraction failed: {str(e)}")
+        return f"Frame extraction failed: {str(e)}", 500
 
     # COLMAP processing pipeline
     try:
         # 1. Create database
         logger.debug("Creating database")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'database_creator',
             '--database_path', database_path
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Database creation output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Database creation failed: {stderr}")
+            return f"Database creation failed: {stderr}", 500
+        logger.debug(f"Database creation output: {stdout}")
 
         # 2. Feature extraction
         logger.debug("Running feature extraction")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'feature_extractor',
             '--database_path', database_path,
@@ -135,12 +162,16 @@ def process_video():
             '--SiftExtraction.max_num_features', '11000',
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Feature extraction output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Feature extraction failed: {stderr}")
+            return f"Feature extraction failed: {stderr}", 500
+        logger.debug(f"Feature extraction output: {stdout}")
 
         # 3. Feature matching
         logger.debug("Running feature matching")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'sequential_matcher',
             '--database_path', database_path,
@@ -157,12 +188,16 @@ def process_video():
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '30'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Feature matching output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Feature matching failed: {stderr}")
+            return f"Feature matching failed: {stderr}", 500
+        logger.debug(f"Feature matching output: {stdout}")
 
         # 4. Sparse reconstruction
         logger.debug("Running sparse reconstruction")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'mapper',
             '--database_path', database_path,
@@ -176,8 +211,12 @@ def process_video():
             '--Mapper.ba_refine_principal_point', '0',
             '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Sparse reconstruction output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Sparse reconstruction failed: {stderr}")
+            return f"Sparse reconstruction failed: {stderr}", 500
+        logger.debug(f"Sparse reconstruction output: {stdout}")
 
         # Verify sparse model
         sparse_model_dir = os.path.join(sparse_dir, '0')
@@ -187,7 +226,7 @@ def process_video():
 
         # 5. Dense reconstruction
         logger.debug("Running dense reconstruction")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'image_undistorter',
             '--image_path', images_dir,
@@ -195,10 +234,14 @@ def process_video():
             '--output_path', dense_dir,
             '--output_type', 'COLMAP',
             '--max_image_size', '2000'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Image undistortion output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Image undistortion failed: {stderr}")
+            return f"Image undistortion failed: {stderr}", 500
+        logger.debug(f"Image undistortion output: {stdout}")
 
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'patch_match_stereo',
             '--workspace_path', dense_dir,
@@ -208,11 +251,15 @@ def process_video():
             '--PatchMatchStereo.window_radius', '5',
             '--PatchMatchStereo.num_samples', '15',
             '--PatchMatchStereo.num_iterations', '5'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Patch match stereo output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Patch match stereo failed: {stderr}")
+            return f"Patch match stereo failed: {stderr}", 500
+        logger.debug(f"Patch match stereo output: {stdout}")
 
         output_dense_ply = os.path.join(dense_dir, 'fused.ply')
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'stereo_fusion',
             '--workspace_path', dense_dir,
@@ -220,8 +267,12 @@ def process_video():
             '--input_type', 'geometric',
             '--output_path', output_dense_ply,
             '--StereoFusion.min_num_pixels', '5'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Stereo fusion output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Stereo fusion failed: {stderr}")
+            return f"Stereo fusion failed: {stderr}", 500
+        logger.debug(f"Stereo fusion output: {stdout}")
 
         if not os.path.exists(output_dense_ply):
             logger.error("Dense point cloud file not found")
@@ -229,14 +280,18 @@ def process_video():
 
         # 6. Export camera poses
         logger.debug("Exporting camera poses")
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'model_converter',
             '--input_path', sparse_model_dir,
             '--output_path', poses_dir,
             '--output_type', 'TXT'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Model converter output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Model converter failed: {stderr}")
+            return f"Model converter failed: {stderr}", 500
+        logger.debug(f"Model converter output: {stdout}")
 
         poses_json_path = os.path.join(base_dir, 'camera_poses.json')
         try:
@@ -258,14 +313,18 @@ def process_video():
         # 7. Export sparse point cloud
         logger.debug("Exporting sparse point cloud")
         output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
-        result = subprocess.run([
+        process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'model_converter',
             '--input_path', sparse_model_dir,
             '--output_path', output_sparse_ply,
             '--output_type', 'PLY'
-        ], check=True, capture_output=True, text=True)
-        logger.debug(f"Point cloud export output: {result.stdout}")
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Sparse point cloud export failed: {stderr}")
+            return f"Sparse point cloud export failed: {stderr}", 500
+        logger.debug(f"Point cloud export output: {stdout}")
 
         # Create zip archive
         logger.debug("Creating zip archive")
@@ -284,21 +343,41 @@ def process_video():
             f.write(zip_buffer.getvalue())
 
         # Return JSON response
-        return {
+        response = {
             'status': 'success',
             'message': 'Processing complete',
-            'sparse_ply_path': '/output/sparse.ply',
-            'dense_ply_path': '/output/dense.ply',
-            'poses_path': '/output/camera_poses.json',
-            'zip_path': '/output/reconstruction_bundle.zip'
+            'sparse_ply_path': f'/output/{request_id}/sparse.ply',
+            'dense_ply_path': f'/output/{request_id}/dense.ply',
+            'poses_path': f'/output/{request_id}/camera_poses.json',
+            'zip_path': f'/output/{request_id}/reconstruction_bundle.zip'
         }, 200
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"COLMAP command failed: stdout={e.stdout}, stderr={e.stderr}")
-        return f"COLMAP processing failed: {e.stderr}", 500
+        # Clean up after response
+        def cleanup():
+            for attempt in range(3):
+                try:
+                    terminate_child_processes()
+                    shutil.rmtree(base_dir)
+                    logger.debug(f"Post-response cleanup: Successfully removed {base_dir}")
+                    break
+                except OSError as e:
+                    logger.warning(f"Post-response cleanup attempt {attempt+1} failed: {e}")
+                    time.sleep(1)
+            else:
+                logger.error(f"Post-response cleanup failed for {base_dir}")
+
+        # Schedule cleanup after response is sent
+        from threading import Thread
+        cleanup_thread = Thread(target=cleanup)
+        cleanup_thread.start()
+
+        return response
+
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         return f"Unexpected error: {str(e)}", 500
+    finally:
+        terminate_child_processes()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
