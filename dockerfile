@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     qtbase5-dev libqt5opengl5-dev libcgal-dev libceres-dev libcurl4-openssl-dev \
     python3 python3-pip python3-dev \
     cuda-cudart-dev-11-7 cuda-libraries-dev-11-7 cuda-nvcc-11-7 cuda-compiler-11-7 \
-    ffmpeg && \
+    ffmpeg lsof && \
     rm -rf /var/lib/apt/lists/*
 
 # Build and install SphereSfM
@@ -38,11 +38,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6 libceres2 libfreeimage3 libgcc-s1 libgflags2.2 \
     libgl1 libglew2.2 libgoogle-glog0v5 libqt5core5a libqt5gui5 libqt5widgets5 \
     libcurl4 python3 python3-pip xvfb libx11-6 libxext6 libxrender1 x11-utils \
-    cuda-cudart-11-7 cuda-libraries-11-7 ffmpeg && \
+    cuda-cudart-11-7 cuda-libraries-11-7 ffmpeg lsof && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip3 install flask psutil
+RUN pip3 install flask psutil gunicorn GPUtil
 
 # Copy SphereSfM/COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
@@ -64,5 +64,5 @@ ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 # Expose port
 EXPOSE 8080
 
-# Run Flask development server
-CMD ["python3", "app.py"]
+# Run Flask app with Gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "3600", "app:app"]

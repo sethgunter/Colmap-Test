@@ -39,8 +39,14 @@ async function processVideo() {
         xhr.send(formData);
 
         await new Promise((resolve, reject) => {
-            xhr.onload = () => resolve(xhr.response);
-            xhr.onerror = () => reject(new Error('Upload failed'));
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(xhr.response);
+                } else {
+                    reject(new Error(`Server responded with status ${xhr.status}: ${xhr.response?.message || xhr.statusText}`));
+                }
+            };
+            xhr.onerror = () => reject(new Error('Network error during upload'));
         });
 
         const result = xhr.response;
@@ -181,7 +187,7 @@ function initThreeJS(plyPath, posesPath) {
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setSize(window.innerWidth / window.innerHeight);
     });
 }
 

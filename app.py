@@ -10,6 +10,8 @@ import io
 import time
 import uuid
 import psutil
+import resource
+import GPUtil
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -45,7 +47,11 @@ def serve_static(path):
 @app.route('/output/<path:path>')
 def serve_output(path):
     logger.debug(f"Attempting to serve output file: {path}")
-    return send_file(os.path.join('/app/colmap_project', path))
+    try:
+        return send_file(os.path.join('/app/colmap_project', path))
+    except FileNotFoundError:
+        logger.error(f"Output file not found: {path}")
+        return {"status": "error", "message": f"File not found: {path}"}, 404
 
 def terminate_child_processes():
     """Terminate any child processes that might be holding files open."""
@@ -54,20 +60,56 @@ def terminate_child_processes():
         children = current_process.children(recursive=True)
         for child in children:
             try:
-                logger.debug(f"Terminating child process {child.pid}")
+                logger.debug(f"Terminating child process {child.pid} ({child.name()})")
                 child.terminate()
-                child.wait(timeout=3)
+                child.wait(timeout=5)
             except (psutil.NoSuchProcess, psutil.TimeoutExpired) as e:
                 logger.warning(f"Failed to terminate child process {child.pid}: {e}")
     except Exception as e:
         logger.error(f"Error while terminating child processes: {e}")
+
+def check_resources():
+    """Check available disk space and GPU memory."""
+    try:
+        # Check disk space
+        disk = shutil.disk_usage('/app')
+        free_gb = disk.free / (1024**3)
+        if free_gb < 10:
+            logger.error(f"Low disk space: {free_gb:.2f} GB available")
+            return False, f"Low disk space: {free_gb:.2f} GB available"
+
+        # Check GPU memory
+        gpus = GPUtil.getGPUs()
+        if not gpus:
+            logger.error("No GPU available")
+            return False, "No GPU available"
+        gpu = gpus[0]
+        free_memory_mb = gpu.memoryFree
+        logger.debug(f"GPU memory free: {free_memory_mb} MB")
+        if free_memory_mb < 3000:
+            logger.error(f"Insufficient GPU memory: {free_memory_mb} MB available")
+            return False, f"Insufficient GPU memory: {free_memory_mb} MB available"
+        return True, ""
+    except Exception as e:
+        logger.error(f"Resource check failed: {e}")
+        return False, f"Resource check failed: {e}"
+
+def debug_file_locks(directory):
+    """Log files that might be locked in the directory using lsof."""
+    try:
+        result = subprocess.run(['lsof', directory], capture_output=True, text=True)
+        logger.debug(f"lsof output for {directory}:\n{result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to run lsof on {directory}: {e.stderr}")
+    except FileNotFoundError:
+        logger.warning("lsof not installed, cannot debug file locks")
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
     if 'video' not in request.files:
         logger.error("No video provided in request")
-        return "No video provided", 400
+        return {"status": "error", "message": "No video provided"}, 400
 
     # Generate unique directory for this request
     request_id = str(uuid.uuid4())
@@ -79,20 +121,21 @@ def process_video():
     dense_dir = os.path.join(base_dir, 'dense')
     poses_dir = os.path.join(base_dir, 'poses')
 
-    # Clean up specific request directory if it exists (shouldn't normally exist)
+    # Clean up specific request directory if it exists
     if os.path.exists(base_dir):
-        for attempt in range(3):
+        for attempt in range(5):
             try:
-                terminate_child_processes()  # Terminate any lingering processes
+                terminate_child_processes()
+                debug_file_locks(base_dir)
                 shutil.rmtree(base_dir)
                 logger.debug(f"Successfully removed {base_dir}")
                 break
             except OSError as e:
                 logger.warning(f"Attempt {attempt+1} to remove {base_dir} failed: {e}")
-                time.sleep(1)
+                time.sleep(3)
         else:
             logger.error(f"Failed to remove {base_dir} after retries")
-            return f"Cannot clean up previous run: {base_dir} is busy", 500
+            return {"status": "error", "message": f"Cannot clean up previous run: {base_dir} is busy"}, 500
 
     # Create directories
     try:
@@ -103,7 +146,7 @@ def process_video():
         os.makedirs(poses_dir, exist_ok=True)
     except OSError as e:
         logger.error(f"Failed to create directories: {e}")
-        return f"Failed to create directories: {e}", 500
+        return {"status": "error", "message": f"Failed to create directories: {e}"}, 500
 
     # Save uploaded video
     video = request.files['video']
@@ -113,7 +156,12 @@ def process_video():
         video.save(video_path)
     except Exception as e:
         logger.error(f"Failed to save video: {str(e)}")
-        return f"Failed to save video: {str(e)}", 500
+        return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
+
+    # Check resources before processing
+    resource_ok, resource_message = check_resources()
+    if not resource_ok:
+        return {"status": "error", "message": resource_message}, 500
 
     # Extract frames using FFmpeg
     try:
@@ -122,14 +170,20 @@ def process_video():
             'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1280:720',
             os.path.join(images_dir, 'frame_%04d.jpg')
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=300)
         if process.returncode != 0:
             logger.error(f"Frame extraction failed: {stderr}")
-            return f"Frame extraction failed: {stderr}", 500
+            return {"status": "error", "message": f"Frame extraction failed: {stderr}"}, 500
         logger.debug(f"Frame extraction output: {stdout}")
+    except subprocess.TimeoutExpired:
+        logger.error("Frame extraction timed out")
+        terminate_child_processes()
+        return {"status": "error", "message": "Frame extraction timed out"}, 500
     except Exception as e:
         logger.error(f"Frame extraction failed: {str(e)}")
-        return f"Frame extraction failed: {str(e)}", 500
+        return {"status": "error", "message": f"Frame extraction failed: {str(e)}"}, 500
+    finally:
+        terminate_child_processes()
 
     # COLMAP processing pipeline
     try:
@@ -140,11 +194,12 @@ def process_video():
             'colmap', 'database_creator',
             '--database_path', database_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=60)
         if process.returncode != 0:
             logger.error(f"Database creation failed: {stderr}")
-            return f"Database creation failed: {stderr}", 500
+            return {"status": "error", "message": f"Database creation failed: {stderr}"}, 500
         logger.debug(f"Database creation output: {stdout}")
+        terminate_child_processes()
 
         # 2. Feature extraction
         logger.debug("Running feature extraction")
@@ -163,11 +218,12 @@ def process_video():
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
-            return f"Feature extraction failed: {stderr}", 500
+            return {"status": "error", "message": f"Feature extraction failed: {stderr}"}, 500
         logger.debug(f"Feature extraction output: {stdout}")
+        terminate_child_processes()
 
         # 3. Feature matching
         logger.debug("Running feature matching")
@@ -189,11 +245,12 @@ def process_video():
             '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '30'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
             logger.error(f"Feature matching failed: {stderr}")
-            return f"Feature matching failed: {stderr}", 500
+            return {"status": "error", "message": f"Feature matching failed: {stderr}"}, 500
         logger.debug(f"Feature matching output: {stdout}")
+        terminate_child_processes()
 
         # 4. Sparse reconstruction
         logger.debug("Running sparse reconstruction")
@@ -212,17 +269,18 @@ def process_video():
             '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
             logger.error(f"Sparse reconstruction failed: {stderr}")
-            return f"Sparse reconstruction failed: {stderr}", 500
+            return {"status": "error", "message": f"Sparse reconstruction failed: {stderr}"}, 500
         logger.debug(f"Sparse reconstruction output: {stdout}")
+        terminate_child_processes()
 
         # Verify sparse model
         sparse_model_dir = os.path.join(sparse_dir, '0')
         if not os.path.exists(sparse_model_dir):
             logger.error("Sparse model not found")
-            return "Sparse reconstruction failed", 500
+            return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
 
         # 5. Dense reconstruction
         logger.debug("Running dense reconstruction")
@@ -233,13 +291,19 @@ def process_video():
             '--input_path', sparse_model_dir,
             '--output_path', dense_dir,
             '--output_type', 'COLMAP',
-            '--max_image_size', '2000'
+            '--max_image_size', '1000'  # Reduced to conserve memory
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
             logger.error(f"Image undistortion failed: {stderr}")
-            return f"Image undistortion failed: {stderr}", 500
+            return {"status": "error", "message": f"Image undistortion failed: {stderr}"}, 500
         logger.debug(f"Image undistortion output: {stdout}")
+        terminate_child_processes()
+
+        # Check resources again before heavy GPU steps
+        resource_ok, resource_message = check_resources()
+        if not resource_ok:
+            return {"status": "error", "message": resource_message}, 500
 
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -247,16 +311,18 @@ def process_video():
             '--workspace_path', dense_dir,
             '--workspace_format', 'COLMAP',
             '--PatchMatchStereo.gpu_index', '0',
-            '--PatchMatchStereo.max_image_size', '2000',
+            '--PatchMatchStereo.max_image_size', '1000',
             '--PatchMatchStereo.window_radius', '5',
-            '--PatchMatchStereo.num_samples', '15',
-            '--PatchMatchStereo.num_iterations', '5'
+            '--PatchMatchStereo.num_samples', '10',
+            '--PatchMatchStereo.num_iterations', '3',
+            '--PatchMatchStereo.geom_consistency', '1'  # Enable for robustness
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=1200)
         if process.returncode != 0:
             logger.error(f"Patch match stereo failed: {stderr}")
-            return f"Patch match stereo failed: {stderr}", 500
+            return {"status": "error", "message": f"Patch match stereo failed: {stderr}"}, 500
         logger.debug(f"Patch match stereo output: {stdout}")
+        terminate_child_processes()
 
         output_dense_ply = os.path.join(dense_dir, 'fused.ply')
         process = subprocess.Popen([
@@ -266,17 +332,20 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--input_type', 'geometric',
             '--output_path', output_dense_ply,
-            '--StereoFusion.min_num_pixels', '5'
+            '--StereoFusion.min_num_pixels', '5',
+            '--StereoFusion.max_reproj_error', '2.0',
+            '--StereoFusion.max_depth_error', '0.25'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
             logger.error(f"Stereo fusion failed: {stderr}")
-            return f"Stereo fusion failed: {stderr}", 500
+            return {"status": "error", "message": f"Stereo fusion failed: {stderr}"}, 500
         logger.debug(f"Stereo fusion output: {stdout}")
+        terminate_child_processes()
 
         if not os.path.exists(output_dense_ply):
             logger.error("Dense point cloud file not found")
-            return "Dense reconstruction failed", 500
+            return {"status": "error", "message": "Dense reconstruction failed: no point cloud generated"}, 500
 
         # 6. Export camera poses
         logger.debug("Exporting camera poses")
@@ -287,11 +356,12 @@ def process_video():
             '--output_path', poses_dir,
             '--output_type', 'TXT'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=60)
         if process.returncode != 0:
             logger.error(f"Model converter failed: {stderr}")
-            return f"Model converter failed: {stderr}", 500
+            return {"status": "error", "message": f"Model converter failed: {stderr}"}, 500
         logger.debug(f"Model converter output: {stdout}")
+        terminate_child_processes()
 
         poses_json_path = os.path.join(base_dir, 'camera_poses.json')
         try:
@@ -308,7 +378,7 @@ def process_video():
                 json.dump(poses, f, indent=4)
         except Exception as e:
             logger.error(f"Failed to parse camera poses: {str(e)}")
-            return f"Failed to parse camera poses: {str(e)}", 500
+            return {"status": "error", "message": f"Failed to parse camera poses: {str(e)}"}, 500
 
         # 7. Export sparse point cloud
         logger.debug("Exporting sparse point cloud")
@@ -320,11 +390,12 @@ def process_video():
             '--output_path', output_sparse_ply,
             '--output_type', 'PLY'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=60)
         if process.returncode != 0:
             logger.error(f"Sparse point cloud export failed: {stderr}")
-            return f"Sparse point cloud export failed: {stderr}", 500
+            return {"status": "error", "message": f"Sparse point cloud export failed: {stderr}"}, 500
         logger.debug(f"Point cloud export output: {stdout}")
+        terminate_child_processes()
 
         # Create zip archive
         logger.debug("Creating zip archive")
@@ -352,21 +423,22 @@ def process_video():
             'zip_path': f'/output/{request_id}/reconstruction_bundle.zip'
         }, 200
 
-        # Clean up after response
+        # Schedule delayed cleanup (10 minutes to allow file access)
         def cleanup():
-            for attempt in range(3):
+            time.sleep(600)  # Wait 10 minutes
+            for attempt in range(5):
                 try:
                     terminate_child_processes()
+                    debug_file_locks(base_dir)
                     shutil.rmtree(base_dir)
                     logger.debug(f"Post-response cleanup: Successfully removed {base_dir}")
                     break
                 except OSError as e:
                     logger.warning(f"Post-response cleanup attempt {attempt+1} failed: {e}")
-                    time.sleep(1)
+                    time.sleep(3)
             else:
                 logger.error(f"Post-response cleanup failed for {base_dir}")
 
-        # Schedule cleanup after response is sent
         from threading import Thread
         cleanup_thread = Thread(target=cleanup)
         cleanup_thread.start()
@@ -375,7 +447,7 @@ def process_video():
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        return f"Unexpected error: {str(e)}", 500
+        return {"status": "error", "message": f"Unexpected error: {str(e)}"}, 500
     finally:
         terminate_child_processes()
 
