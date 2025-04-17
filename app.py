@@ -18,13 +18,29 @@ logger = logging.getLogger(__name__)
 def add_security_headers(response: Response):
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; connect-src 'self'; worker-src 'self' blob:;"
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+        "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "worker-src 'self' blob:;"
+    )
     return response
 
 @app.route('/')
 def index():
     logger.debug("Serving index.html")
-    return app.send_static_file('index.html')
+    response = app.send_static_file('index.html')
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+        "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "worker-src 'self' blob:;"
+    )
+    return response
 
 @app.route('/static/<path:path>')
 def serve_static(path):
@@ -32,7 +48,13 @@ def serve_static(path):
     response = app.send_static_file(path)
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; connect-src 'self'; worker-src 'self' blob:;"
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+        "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "worker-src 'self' blob:;"
+    )
     return response
 
 @app.route('/output/<path:path>')
