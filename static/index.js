@@ -1,4 +1,5 @@
-import { createFFmpeg } from '/static/ffmpeg/ffmpeg.min.js';
+// Use global FFmpeg from UMD bundle
+const { createFFmpeg } = window.FFmpeg;
 
 const videoInput = document.getElementById('videoInput');
 const processButton = document.getElementById('processButton');
