@@ -35,6 +35,80 @@ async function loadFFmpeg() {
     }
 }
 
+async function processVideo() {
+    if (!ffmpegReady) {
+        message.textContent = 'FFmpeg not ready. Please wait or refresh.';
+        return;
+    }
+    const videoFile = videoInput.files[0];
+    if (!videoFile) {
+        message.textContent = 'Please select a video file.';
+        return;
+    }
+
+    processButton.disabled = true;
+    message.textContent = 'Extracting frames...';
+    showModelButton.style.display = 'none';
+    downloadButton.style.display = 'none';
+    container.style.display = 'none';
+
+    try {
+        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
+        await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1280:720', 'frame_%04d.jpg');
+
+        const frames = [];
+        const files = ffmpeg.FS('readdir', '/');
+        for (const file of files) {
+            if (file.startsWith('frame_')) {
+                const data = ffmpeg.FS('readFile', file);
+                frames.push(new File([data.buffer], file, { type: 'image/jpeg' }));
+            }
+        }
+
+        if (frames.length === 0) {
+            throw new Error('No frames extracted.');
+        }
+
+        message.textContent = 'Uploading frames...';
+        const formData = new FormData();
+        frames.forEach(frame => formData.append('frames', frame));
+
+        const response = await fetch('/process-video', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server error: ${await response.text()}`);
+        }
+
+        const result = await response.json();
+        message.textContent = result.message;
+        showModelButton.style.display = 'block';
+        downloadButton.style.display = 'block';
+
+        showModelButton.onclick = () => {
+            container.style.display = 'block';
+            initThreeJS(result.dense_ply_path, result.poses_path);
+            showModelButton.style.display = 'none';
+            message.textContent = 'Model displayed. Rotate, zoom, pan with mouse.';
+        };
+
+        downloadButton.onclick = () => {
+            const zipLink = document.createElement('a');
+            zipLink.href = result.zip_path;
+            zipLink.download = 'reconstruction_bundle.zip';
+            zipLink.click();
+            message.textContent = 'Download started.';
+        };
+    } catch (error) {
+        console.error('Processing error:', error);
+        message.textContent = `Error: ${error.message}`;
+    } finally {
+        processButton.disabled = false;
+    }
+}
+
 function initThreeJS(plyPath, posesPath) {
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
@@ -139,80 +213,6 @@ function initThreeJS(plyPath, posesPath) {
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
-}
-
-async function processVideo() {
-    if (!ffmpegReady) {
-        message.textContent = 'FFmpeg not ready. Please wait or refresh.';
-        return;
-    }
-    const videoFile = videoInput.files[0];
-    if (!videoFile) {
-        message.textContent = 'Please select a video file.';
-        return;
-    }
-
-    processButton.disabled = true;
-    message.textContent = 'Extracting frames...';
-    showModelButton.style.display = 'none';
-    downloadButton.style.display = 'none';
-    container.style.display = 'none';
-
-    try {
-        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
-        await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1280:720', 'frame_%04d.jpg');
-
-        const frames = [];
-        const files = ffmpeg.FS('readdir', '/');
-        for (const file of files) {
-            if (file.startsWith('frame_')) {
-                const data = ffmpeg.FS('readFile', file);
-                frames.push(new File([data.buffer], file, { type: 'image/jpeg' }));
-            }
-        }
-
-        if (frames.length === 0) {
-            throw new Error('No frames extracted.');
-        }
-
-        message.textContent = 'Uploading frames...';
-        const formData = new FormData();
-        frames.forEach(frame => formData.append('frames', frame));
-
-        const response = await fetch('/process-video', {
-            method: 'POST',
-            body: formData
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server error: ${await response.text()}`);
-        }
-
-        const result = await response.json();
-        message.textContent = result.message;
-        showModelButton.style.display = 'block';
-        downloadButton.style.display = 'block';
-
-        showModelButton.onclick = () => {
-            container.style.display = 'block';
-            initThreeJS(result.dense_ply_path, result.poses_path);
-            showModelButton.style.display = 'none';
-            message.textContent = 'Model displayed. Rotate, zoom, pan with mouse.';
-        };
-
-        downloadButton.onclick = () => {
-            const zipLink = document.createElement('a');
-            zipLink.href = result.zip_path;
-            zipLink.download = 'reconstruction_bundle.zip';
-            zipLink.click();
-            message.textContent = 'Download started.';
-        };
-    } catch (error) {
-        console.error('Processing error:', error);
-        message.textContent = `Error: ${error.message}`;
-    } finally {
-        processButton.disabled = false;
-    }
 }
 
 processButton.disabled = true;
