@@ -1,4 +1,4 @@
-const { createFFmpeg, fetchFile } = FFmpeg;
+import { createFFmpeg, fetchFile } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/esm/ffmpeg.min.js';
 
 const videoInput = document.getElementById('videoInput');
 const processButton = document.getElementById('processButton');
@@ -13,16 +13,15 @@ let pointCloudCenter;
 let scalingFactor;
 
 async function loadFFmpeg() {
-    // Check for SharedArrayBuffer support
     if (typeof SharedArrayBuffer === 'undefined') {
-        message.textContent = 'SharedArrayBuffer is not available. Ensure the page is served with cross-origin isolation headers (COOP: same-origin, COEP: require-corp).';
-        console.error('SharedArrayBuffer is not supported. Check server headers.');
+        message.textContent = 'SharedArrayBuffer is not available. Ensure HTTPS and cross-origin isolation headers (COOP: same-origin, COEP: require-corp).';
+        console.error('SharedArrayBuffer is not supported.');
         return;
     }
 
     ffmpeg = createFFmpeg({
         log: true,
-        corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
+        corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js'
     });
     message.textContent = 'Loading FFmpeg...';
     try {
@@ -30,6 +29,7 @@ async function loadFFmpeg() {
         ffmpegReady = true;
         processButton.disabled = false;
         message.textContent = 'FFmpeg loaded. Select a video.';
+        console.log('FFmpeg loaded successfully');
     } catch (error) {
         console.error('FFmpeg load failed:', error);
         message.textContent = `FFmpeg error: ${error.message}. Check console for details.`;
@@ -161,7 +161,7 @@ async function processVideo() {
 
     try {
         ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
-        await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1920:960', 'frame_%04d.jpg');
+        await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1280:720', 'frame_%04d.jpg');
 
         const frames = [];
         const files = ffmpeg.FS('readdir', '/');
@@ -196,7 +196,7 @@ async function processVideo() {
 
         showModelButton.onclick = () => {
             container.style.display = 'block';
-            initThreeJS(result.dense_ply_path, result.poses_path); // Use dense.ply
+            initThreeJS(result.dense_ply_path, result.poses_path);
             showModelButton.style.display = 'none';
             message.textContent = 'Model displayed. Rotate, zoom, pan with mouse.';
         };
