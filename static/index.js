@@ -18,9 +18,12 @@ async function loadFFmpeg() {
         return;
     }
 
+    // Use absolute URL for corePath based on current origin
+    const corePath = `${window.location.origin}/static/ffmpeg/ffmpeg-core.js`;
+
     ffmpeg = createFFmpeg({
         log: true,
-        corePath: '/static/ffmpeg/ffmpeg-core.js'
+        corePath: corePath
     });
     message.textContent = 'Loading FFmpeg...';
     try {
@@ -115,7 +118,7 @@ function initThreeJS(plyPath, posesPath) {
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
     const renderer = new THREE.WebGLRenderer();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(window.innerWidth / window.innerHeight);
     container.appendChild(renderer.domElement);
 
     const controls = new THREE.OrbitControls(camera, renderer.domElement);

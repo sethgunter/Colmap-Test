@@ -22,7 +22,7 @@ def add_security_headers(response: Response):
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "connect-src 'self'; "
+        "connect-src 'self' file:; "  # Allow file:// temporarily
         "worker-src 'self' blob:;"
     )
     return response
@@ -37,7 +37,7 @@ def index():
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "connect-src 'self'; "
+        "connect-src 'self' file:; "
         "worker-src 'self' blob:;"
     )
     return response
@@ -52,7 +52,7 @@ def serve_static(path):
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "connect-src 'self'; "
+        "connect-src 'self' file:; "
         "worker-src 'self' blob:;"
     )
     return response
