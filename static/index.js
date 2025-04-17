@@ -1,4 +1,4 @@
-import { createFFmpeg, fetchFile } from '/static/ffmpeg/ffmpeg.min.js';
+import { createFFmpeg } from '/static/ffmpeg/ffmpeg.min.js';
 
 const videoInput = document.getElementById('videoInput');
 const processButton = document.getElementById('processButton');
@@ -9,8 +9,6 @@ const container = document.getElementById('container');
 
 let ffmpeg;
 let ffmpegReady = false;
-let pointCloudCenter;
-let scalingFactor;
 
 async function loadFFmpeg() {
     if (typeof SharedArrayBuffer === 'undefined') {
@@ -53,7 +51,10 @@ async function processVideo() {
     container.style.display = 'none';
 
     try {
-        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
+        // Read file as ArrayBuffer and write to FFmpeg FS
+        const arrayBuffer = await videoFile.arrayBuffer();
+        ffmpeg.FS('writeFile', 'input.mp4', new Uint8Array(arrayBuffer));
+
         await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1280:720', 'frame_%04d.jpg');
 
         const frames = [];
