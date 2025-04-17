@@ -315,7 +315,7 @@ def process_video():
             '--PatchMatchStereo.window_radius', '5',
             '--PatchMatchStereo.num_samples', '10',
             '--PatchMatchStereo.num_iterations', '3',
-            '--PatchMatchStereo.geom_consistency', '1'  # Enable for robustness
+            '--PatchMatchStereo.filter', '1'  # Enable for robustness
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=1200)
         if process.returncode != 0:
@@ -334,7 +334,8 @@ def process_video():
             '--output_path', output_dense_ply,
             '--StereoFusion.min_num_pixels', '5',
             '--StereoFusion.max_reproj_error', '2.0',
-            '--StereoFusion.max_depth_error', '0.25'
+            '--StereoFusion.max_depth_error', '0.25',
+            '--StereoFusion.filter_min_tri_angle', '1.0'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
