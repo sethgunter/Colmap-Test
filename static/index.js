@@ -1,4 +1,4 @@
-import { createFFmpeg, fetchFile } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/esm/ffmpeg.min.js';
+import { createFFmpeg, fetchFile } from '/static/ffmpeg/ffmpeg.min.js';
 
 const videoInput = document.getElementById('videoInput');
 const processButton = document.getElementById('processButton');
@@ -14,14 +14,14 @@ let scalingFactor;
 
 async function loadFFmpeg() {
     if (typeof SharedArrayBuffer === 'undefined') {
-        message.textContent = 'SharedArrayBuffer is not available. Ensure HTTPS and cross-origin isolation headers (COOP: same-origin, COEP: require-corp).';
-        console.error('SharedArrayBuffer is not supported.');
+        message.textContent = 'SharedArrayBuffer unavailable. Use HTTPS and check headers.';
+        console.error('SharedArrayBuffer not supported.');
         return;
     }
 
     ffmpeg = createFFmpeg({
         log: true,
-        corePath: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js'
+        corePath: '/static/ffmpeg/ffmpeg-core.js'
     });
     message.textContent = 'Loading FFmpeg...';
     try {
@@ -29,10 +29,9 @@ async function loadFFmpeg() {
         ffmpegReady = true;
         processButton.disabled = false;
         message.textContent = 'FFmpeg loaded. Select a video.';
-        console.log('FFmpeg loaded successfully');
     } catch (error) {
         console.error('FFmpeg load failed:', error);
-        message.textContent = `FFmpeg error: ${error.message}. Check console for details.`;
+        message.textContent = `FFmpeg error: ${error.message}`;
     }
 }
 

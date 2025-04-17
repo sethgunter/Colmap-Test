@@ -21,8 +21,8 @@ def add_security_headers(response: Response):
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
-        "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+        "connect-src 'self'; "
         "worker-src 'self' blob:;"
     )
     return response
@@ -36,8 +36,8 @@ def index():
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
-        "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+        "connect-src 'self'; "
         "worker-src 'self' blob:;"
     )
     return response
@@ -51,8 +51,8 @@ def serve_static(path):
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
-        "connect-src 'self' https://cdn.jsdelivr.net https://unpkg.com; "
+        "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
+        "connect-src 'self'; "
         "worker-src 'self' blob:;"
     )
     return response
