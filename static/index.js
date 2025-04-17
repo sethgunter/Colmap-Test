@@ -13,6 +13,13 @@ let pointCloudCenter;
 let scalingFactor;
 
 async function loadFFmpeg() {
+    // Check for SharedArrayBuffer support
+    if (typeof SharedArrayBuffer === 'undefined') {
+        message.textContent = 'SharedArrayBuffer is not available. Ensure the page is served with cross-origin isolation headers (COOP: same-origin, COEP: require-corp).';
+        console.error('SharedArrayBuffer is not supported. Check server headers.');
+        return;
+    }
+
     ffmpeg = createFFmpeg({
         log: true,
         corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
@@ -43,18 +50,15 @@ function initThreeJS(plyPath, posesPath) {
     let sceneCenter = new THREE.Vector3(0, 0, 0);
     let sceneExtent = 1;
 
-    // Create a group to hold points and cameras
     const group = new THREE.Group();
     scene.add(group);
 
-    // Load point cloud
     const loader = new THREE.PLYLoader();
     loader.load(plyPath, (geometry) => {
         geometry.computeVertexNormals();
         const material = new THREE.PointsMaterial({ size: 0.02, vertexColors: true });
         const points = new THREE.Points(geometry, material);
 
-        // Median centering
         const positions = geometry.attributes.position.array;
         const coords = { x: [], y: [], z: [] };
         for (let i = 0; i < positions.length; i += 3) {
@@ -72,7 +76,6 @@ function initThreeJS(plyPath, posesPath) {
 
         group.add(points);
 
-        // Scene extent (IQR)
         const iqr = (arr) => {
             const sorted = [...arr].sort((a, b) => a - b);
             const q1 = sorted[Math.floor(sorted.length * 0.25)];
@@ -84,7 +87,6 @@ function initThreeJS(plyPath, posesPath) {
         console.log('Scene center:', sceneCenter);
         console.log('Scene extent:', sceneExtent);
 
-        // Load camera poses
         fetch(posesPath)
             .then(response => response.json())
             .then(poses => {
@@ -94,32 +96,27 @@ function initThreeJS(plyPath, posesPath) {
                 const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
 
                 for (const [_, pose] of Object.entries(poses)) {
-                    // Invert pose (world-to-camera to camera-to-world)
                     const q = new THREE.Quaternion(pose.qx, pose.qy, pose.qz, pose.qw);
                     const qInv = q.clone().conjugate();
                     const t = new THREE.Vector3(pose.tx, pose.ty, pose.tz);
                     const tInv = t.clone().applyQuaternion(qInv).negate();
                     tInv.sub(sceneCenter);
 
-                    // Cone
                     const cone = new THREE.Mesh(coneGeometry, coneMaterial);
                     cone.position.copy(tInv);
                     cone.setRotationFromQuaternion(qInv);
-                    cone.rotateX(Math.PI / 2); // Align cone
+                    cone.rotateX(Math.PI / 2);
                     group.add(cone);
 
-                    // Sphere
                     const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
                     sphere.position.copy(tInv);
                     group.add(sphere);
                 }
 
-                // Rotate entire group 180° around X-axis
-                group.rotation.x = Math.PI; // Map COLMAP Y-up to Three.js Z-up
+                group.rotation.x = Math.PI;
 
-                // Camera view: Standard Three.js Z-up
-                camera.position.set(0, 0, sceneExtent * 2); // Above
-                camera.up.set(0, 1, 0); // Standard Z-up
+                camera.position.set(0, 0, sceneExtent * 2);
+                camera.up.set(0, 1, 0);
                 camera.lookAt(0, 0, 0);
             })
             .catch(error => console.error('Poses load error:', error));
@@ -147,12 +144,12 @@ function initThreeJS(plyPath, posesPath) {
 
 async function processVideo() {
     if (!ffmpegReady) {
-        message.textContent = 'FFmpeg not ready.';
+        message.textContent = 'FFmpeg not ready. Please wait or refresh.';
         return;
     }
     const videoFile = videoInput.files[0];
     if (!videoFile) {
-        message.textContent = 'Select a video.';
+        message.textContent = 'Please select a video file.';
         return;
     }
 
@@ -175,34 +172,42 @@ async function processVideo() {
             }
         }
 
+        if (frames.length === 0) {
+            throw new Error('No frames extracted.');
+        }
+
         message.textContent = 'Uploading frames...';
         const formData = new FormData();
         frames.forEach(frame => formData.append('frames', frame));
 
-        const response = await fetch('/process-video', { method: 'POST', body: formData });
-        if (response.ok) {
-            const result = await response.json();
-            message.textContent = result.message;
-            showModelButton.style.display = 'block';
-            downloadButton.style.display = 'block';
+        const response = await fetch('/process-video', {
+            method: 'POST',
+            body: formData
+        });
 
-            showModelButton.onclick = () => {
-                container.style.display = 'block';
-                initThreeJS(result.ply_path, result.poses_path);
-                showModelButton.style.display = 'none';
-                message.textContent = 'Model displayed. Rotate, zoom, pan with mouse.';
-            };
-
-            downloadButton.onclick = () => {
-                const zipLink = document.createElement('a');
-                zipLink.href = result.zip_path;
-                zipLink.download = 'reconstruction_bundle.zip';
-                zipLink.click();
-                message.textContent = 'Download started.';
-            };
-        } else {
-            throw new Error(await response.text());
+        if (!response.ok) {
+            throw new Error(`Server error: ${await response.text()}`);
         }
+
+        const result = await response.json();
+        message.textContent = result.message;
+        showModelButton.style.display = 'block';
+        downloadButton.style.display = 'block';
+
+        showModelButton.onclick = () => {
+            container.style.display = 'block';
+            initThreeJS(result.dense_ply_path, result.poses_path); // Use dense.ply
+            showModelButton.style.display = 'none';
+            message.textContent = 'Model displayed. Rotate, zoom, pan with mouse.';
+        };
+
+        downloadButton.onclick = () => {
+            const zipLink = document.createElement('a');
+            zipLink.href = result.zip_path;
+            zipLink.download = 'reconstruction_bundle.zip';
+            zipLink.click();
+            message.textContent = 'Download started.';
+        };
     } catch (error) {
         console.error('Processing error:', error);
         message.textContent = `Error: ${error.message}`;
