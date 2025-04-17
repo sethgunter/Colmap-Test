@@ -6,6 +6,7 @@ import logging
 import json
 import zipfile
 import io
+import time
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 def add_security_headers(response: Response):
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; connect-src 'self'; worker-src 'self' blob:;"
     return response
 
 @app.route('/')
@@ -27,7 +29,11 @@ def index():
 @app.route('/static/<path:path>')
 def serve_static(path):
     logger.debug(f"Attempting to serve static file: {path}")
-    return app.send_static_file(path)
+    response = app.send_static_file(path)
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; connect-src 'self'; worker-src 'self' blob:;"
+    return response
 
 @app.route('/output/<path:path>')
 def serve_output(path):
@@ -49,13 +55,29 @@ def process_video():
     dense_dir = os.path.join(base_dir, 'dense')
     poses_dir = os.path.join(base_dir, 'poses')
 
-    # Clean up previous runs
+    # Clean up previous runs with retry mechanism
     if os.path.exists(base_dir):
-        shutil.rmtree(base_dir)
-    os.makedirs(images_dir)
-    os.makedirs(sparse_dir)
-    os.makedirs(dense_dir)
-    os.makedirs(poses_dir, exist_ok=True)
+        for attempt in range(3):
+            try:
+                shutil.rmtree(base_dir)
+                logger.debug(f"Successfully removed {base_dir}")
+                break
+            except OSError as e:
+                logger.warning(f"Attempt {attempt+1} to remove {base_dir} failed: {e}")
+                time.sleep(1)  # Wait before retrying
+        else:
+            logger.error(f"Failed to remove {base_dir} after retries")
+            return f"Cannot clean up previous run: {base_dir} is busy", 500
+
+    # Create directories
+    try:
+        os.makedirs(images_dir)
+        os.makedirs(sparse_dir)
+        os.makedirs(dense_dir)
+        os.makedirs(poses_dir, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to create directories: {e}")
+        return f"Failed to create directories: {e}", 500
 
     # Save uploaded frames
     frames = request.files.getlist('frames')
@@ -209,7 +231,7 @@ def process_video():
         # Parse images.txt to create camera_poses.json
         poses_json_path = os.path.join(base_dir, 'camera_poses.json')
         try:
-            with open(os.path.join(poses_dir, 'txt/images.txt')) as f:
+            with open(os.path.join(poses_dir, 'images.txt')) as f:
                 lines = f.readlines()[4::2]
                 poses = {}
                 for line in lines:
@@ -240,7 +262,7 @@ def process_video():
             logger.error("Sparse point cloud file not found")
             return "Sparse point cloud export failed", 500
 
-        # Create a proper zip archive
+        # Create zip archive
         logger.debug("Creating zip archive")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -262,7 +284,7 @@ def process_video():
         with open(zip_temp_path, 'wb') as f:
             f.write(zip_buffer.getvalue())
 
-        # Return JSON response with paths for webview
+        # Return JSON response
         return {
             'status': 'success',
             'message': 'Processing complete',
