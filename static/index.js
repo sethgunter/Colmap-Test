@@ -1,47 +1,15 @@
-// Use global FFmpeg from UMD bundle
-const { createFFmpeg } = window.FFmpeg;
-
+// static/index.js
 const videoInput = document.getElementById('videoInput');
 const processButton = document.getElementById('processButton');
 const message = document.getElementById('message');
-const showModelButton = document.getElementById('showModelButton');
+const viewDenseButton = document.getElementById('viewDenseButton');
+const viewSparseButton = document.getElementById('viewSparseButton');
 const downloadButton = document.getElementById('downloadButton');
 const container = document.getElementById('container');
-
-let ffmpeg;
-let ffmpegReady = false;
-
-async function loadFFmpeg() {
-    if (typeof SharedArrayBuffer === 'undefined') {
-        message.textContent = 'SharedArrayBuffer unavailable. Use HTTPS and check headers.';
-        console.error('SharedArrayBuffer not supported.');
-        return;
-    }
-
-    // Use absolute URL for corePath based on current origin
-    const corePath = `${window.location.origin}/static/ffmpeg/ffmpeg-core.js`;
-
-    ffmpeg = createFFmpeg({
-        log: true,
-        corePath: corePath
-    });
-    message.textContent = 'Loading FFmpeg...';
-    try {
-        await ffmpeg.load();
-        ffmpegReady = true;
-        processButton.disabled = false;
-        message.textContent = 'FFmpeg loaded. Select a video.';
-    } catch (error) {
-        console.error('FFmpeg load failed:', error);
-        message.textContent = `FFmpeg error: ${error.message}`;
-    }
-}
+const progressBar = document.getElementById('progressBar');
+const progressContainer = document.getElementById('progressContainer');
 
 async function processVideo() {
-    if (!ffmpegReady) {
-        message.textContent = 'FFmpeg not ready. Please wait or refresh.';
-        return;
-    }
     const videoFile = videoInput.files[0];
     if (!videoFile) {
         message.textContent = 'Please select a video file.';
@@ -49,54 +17,53 @@ async function processVideo() {
     }
 
     processButton.disabled = true;
-    message.textContent = 'Extracting frames...';
-    showModelButton.style.display = 'none';
-    downloadButton.style.display = 'none';
-    container.style.display = 'none';
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '0%';
+    message.textContent = 'Uploading video...';
 
     try {
-        // Read file as ArrayBuffer and write to FFmpeg FS
-        const arrayBuffer = await videoFile.arrayBuffer();
-        ffmpeg.FS('writeFile', 'input.mp4', new Uint8Array(arrayBuffer));
-
-        await ffmpeg.run('-i', 'input.mp4', '-r', '2', '-vf', 'scale=1280:720', 'frame_%04d.jpg');
-
-        const frames = [];
-        const files = ffmpeg.FS('readdir', '/');
-        for (const file of files) {
-            if (file.startsWith('frame_')) {
-                const data = ffmpeg.FS('readFile', file);
-                frames.push(new File([data.buffer], file, { type: 'image/jpeg' }));
-            }
-        }
-
-        if (frames.length === 0) {
-            throw new Error('No frames extracted.');
-        }
-
-        message.textContent = 'Uploading frames...';
         const formData = new FormData();
-        frames.forEach(frame => formData.append('frames', frame));
+        formData.append('video', videoFile);
 
-        const response = await fetch('/process-video', {
-            method: 'POST',
-            body: formData
+        const xhr = new XMLHttpRequest();
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const percent = (e.loaded / e.total) * 100;
+                progressBar.style.width = `${percent}%`;
+                message.textContent = `Uploading: ${Math.round(percent)}%`;
+            }
         });
 
-        if (!response.ok) {
-            throw new Error(`Server error: ${await response.text()}`);
+        xhr.open('POST', '/process-video');
+        xhr.responseType = 'json';
+        xhr.send(formData);
+
+        await new Promise((resolve, reject) => {
+            xhr.onload = () => resolve(xhr.response);
+            xhr.onerror = () => reject(new Error('Upload failed'));
+        });
+
+        const result = xhr.response;
+        if (!result || result.status !== 'success') {
+            throw new Error(result?.message || 'Server error');
         }
 
-        const result = await response.json();
-        message.textContent = result.message;
-        showModelButton.style.display = 'block';
+        message.textContent = 'Processing complete';
+        progressBar.style.width = '100%';
+        viewDenseButton.style.display = 'block';
+        viewSparseButton.style.display = 'block';
         downloadButton.style.display = 'block';
 
-        showModelButton.onclick = () => {
+        viewDenseButton.onclick = () => {
             container.style.display = 'block';
             initThreeJS(result.dense_ply_path, result.poses_path);
-            showModelButton.style.display = 'none';
-            message.textContent = 'Model displayed. Rotate, zoom, pan with mouse.';
+            message.textContent = 'Dense model displayed';
+        };
+
+        viewSparseButton.onclick = () => {
+            container.style.display = 'block';
+            initThreeJS(result.sparse_ply_path, result.poses_path);
+            message.textContent = 'Sparse model displayed';
         };
 
         downloadButton.onclick = () => {
@@ -104,17 +71,19 @@ async function processVideo() {
             zipLink.href = result.zip_path;
             zipLink.download = 'reconstruction_bundle.zip';
             zipLink.click();
-            message.textContent = 'Download started.';
+            message.textContent = 'Download started';
         };
     } catch (error) {
         console.error('Processing error:', error);
         message.textContent = `Error: ${error.message}`;
     } finally {
         processButton.disabled = false;
+        progressContainer.style.display = 'none';
     }
 }
 
 function initThreeJS(plyPath, posesPath) {
+    container.innerHTML = ''; // Clear previous scene
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
     const renderer = new THREE.WebGLRenderer();
@@ -162,9 +131,6 @@ function initThreeJS(plyPath, posesPath) {
         };
         sceneExtent = Math.max(iqr(coords.x), iqr(coords.y), iqr(coords.z)) * 1.5;
 
-        console.log('Scene center:', sceneCenter);
-        console.log('Scene extent:', sceneExtent);
-
         fetch(posesPath)
             .then(response => response.json())
             .then(poses => {
@@ -196,9 +162,8 @@ function initThreeJS(plyPath, posesPath) {
                 camera.position.set(0, 0, sceneExtent * 2);
                 camera.up.set(0, 1, 0);
                 camera.lookAt(0, 0, 0);
-            })
-            .catch(error => console.error('Poses load error:', error));
-    }, undefined, (error) => console.error('PLY load error:', error));
+            });
+    });
 
     scene.background = new THREE.Color(0x000000);
     scene.add(new THREE.AmbientLight(0xffffff, 0.5));
@@ -216,10 +181,8 @@ function initThreeJS(plyPath, posesPath) {
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setSize(window.innerWidth / window.innerHeight);
     });
 }
 
-processButton.disabled = true;
-loadFFmpeg();
 processButton.addEventListener('click', processVideo);

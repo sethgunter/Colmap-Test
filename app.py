@@ -1,3 +1,4 @@
+# app.py
 from flask import Flask, request, send_file, Response
 import subprocess
 import os
@@ -22,7 +23,7 @@ def add_security_headers(response: Response):
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "connect-src 'self' file:; "  # Allow file:// temporarily
+        "connect-src 'self' file:; "
         "worker-src 'self' blob:;"
     )
     return response
@@ -31,30 +32,12 @@ def add_security_headers(response: Response):
 def index():
     logger.debug("Serving index.html")
     response = app.send_static_file('index.html')
-    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
-    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
-    response.headers['Content-Security-Policy'] = (
-        "default-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "connect-src 'self' file:; "
-        "worker-src 'self' blob:;"
-    )
     return response
 
 @app.route('/static/<path:path>')
 def serve_static(path):
     logger.debug(f"Attempting to serve static file: {path}")
     response = app.send_static_file(path)
-    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
-    response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
-    response.headers['Content-Security-Policy'] = (
-        "default-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net; "
-        "connect-src 'self' file:; "
-        "worker-src 'self' blob:;"
-    )
     return response
 
 @app.route('/output/<path:path>')
@@ -65,12 +48,13 @@ def serve_output(path):
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
-    if 'frames' not in request.files:
-        logger.error("No frames provided in request")
-        return "No frames provided", 400
+    if 'video' not in request.files:
+        logger.error("No video provided in request")
+        return "No video provided", 400
 
     # Set up working directories
     base_dir = '/app/colmap_project'
+    video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
@@ -86,13 +70,14 @@ def process_video():
                 break
             except OSError as e:
                 logger.warning(f"Attempt {attempt+1} to remove {base_dir} failed: {e}")
-                time.sleep(1)  # Wait before retrying
+                time.sleep(1)
         else:
             logger.error(f"Failed to remove {base_dir} after retries")
             return f"Cannot clean up previous run: {base_dir} is busy", 500
 
     # Create directories
     try:
+        os.makedirs(video_dir)
         os.makedirs(images_dir)
         os.makedirs(sparse_dir)
         os.makedirs(dense_dir)
@@ -101,23 +86,29 @@ def process_video():
         logger.error(f"Failed to create directories: {e}")
         return f"Failed to create directories: {e}", 500
 
-    # Save uploaded frames
-    frames = request.files.getlist('frames')
-    logger.debug(f"Received {len(frames)} frames")
-    if not frames:
-        logger.error("No frames found in request.files.getlist('frames')")
-        return "No frames uploaded", 400
+    # Save uploaded video
+    video = request.files['video']
+    video_path = os.path.join(video_dir, video.filename)
+    logger.debug(f"Saving video: {video_path}")
+    try:
+        video.save(video_path)
+    except Exception as e:
+        logger.error(f"Failed to save video: {str(e)}")
+        return f"Failed to save video: {str(e)}", 500
 
-    for frame in frames:
-        frame_path = os.path.join(images_dir, frame.filename)
-        logger.debug(f"Saving frame: {frame_path}")
-        try:
-            frame.save(frame_path)
-        except Exception as e:
-            logger.error(f"Failed to save frame {frame.filename}: {str(e)}")
-            return f"Failed to save frame {frame.filename}: {str(e)}", 500
+    # Extract frames using FFmpeg
+    try:
+        logger.debug("Extracting frames")
+        result = subprocess.run([
+            'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1280:720',
+            os.path.join(images_dir, 'frame_%04d.jpg')
+        ], check=True, capture_output=True, text=True)
+        logger.debug(f"Frame extraction output: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Frame extraction failed: {e.stderr}")
+        return f"Frame extraction failed: {e.stderr}", 500
 
-    # COLMAP processing pipeline with SphereSfM parameters and CUDA support
+    # COLMAP processing pipeline
     try:
         # 1. Create database
         logger.debug("Creating database")
@@ -128,7 +119,7 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Database creation output: {result.stdout}")
 
-        # 2. Feature extraction (GPU-enabled)
+        # 2. Feature extraction
         logger.debug("Running feature extraction")
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -147,7 +138,7 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Feature extraction output: {result.stdout}")
 
-        # 3. Feature matching (GPU-enabled)
+        # 3. Feature matching
         logger.debug("Running feature matching")
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -188,15 +179,14 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Sparse reconstruction output: {result.stdout}")
 
-        # Verify sparse model exists
+        # Verify sparse model
         sparse_model_dir = os.path.join(sparse_dir, '0')
         if not os.path.exists(sparse_model_dir):
             logger.error("Sparse model not found")
-            return "Sparse reconstruction failed, no model generated", 500
+            return "Sparse reconstruction failed", 500
 
         # 5. Dense reconstruction
         logger.debug("Running dense reconstruction")
-        # 5.1. Image undistortion
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'image_undistorter',
@@ -208,7 +198,6 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Image undistortion output: {result.stdout}")
 
-        # 5.2. Patch match stereo (GPU-enabled)
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'patch_match_stereo',
@@ -222,7 +211,6 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Patch match stereo output: {result.stdout}")
 
-        # 5.3. Stereo fusion
         output_dense_ply = os.path.join(dense_dir, 'fused.ply')
         result = subprocess.run([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -237,7 +225,7 @@ def process_video():
 
         if not os.path.exists(output_dense_ply):
             logger.error("Dense point cloud file not found")
-            return "Dense reconstruction failed, no point cloud generated", 500
+            return "Dense reconstruction failed", 500
 
         # 6. Export camera poses
         logger.debug("Exporting camera poses")
@@ -250,7 +238,6 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Model converter output: {result.stdout}")
 
-        # Parse images.txt to create camera_poses.json
         poses_json_path = os.path.join(base_dir, 'camera_poses.json')
         try:
             with open(os.path.join(poses_dir, 'images.txt')) as f:
@@ -268,7 +255,7 @@ def process_video():
             logger.error(f"Failed to parse camera poses: {str(e)}")
             return f"Failed to parse camera poses: {str(e)}", 500
 
-        # 7. Export sparse point cloud as PLY
+        # 7. Export sparse point cloud
         logger.debug("Exporting sparse point cloud")
         output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
         result = subprocess.run([
@@ -280,26 +267,16 @@ def process_video():
         ], check=True, capture_output=True, text=True)
         logger.debug(f"Point cloud export output: {result.stdout}")
 
-        if not os.path.exists(output_sparse_ply):
-            logger.error("Sparse point cloud file not found")
-            return "Sparse point cloud export failed", 500
-
         # Create zip archive
         logger.debug("Creating zip archive")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             if os.path.exists(output_sparse_ply):
                 zip_file.write(output_sparse_ply, 'sparse.ply')
-            else:
-                logger.warning("sparse.ply not found, skipping")
             if os.path.exists(output_dense_ply):
                 zip_file.write(output_dense_ply, 'dense.ply')
-            else:
-                logger.warning("dense.ply not found, skipping")
             if os.path.exists(poses_json_path):
                 zip_file.write(poses_json_path, 'camera_poses.json')
-            else:
-                logger.warning("camera_poses.json not found, skipping")
 
         zip_buffer.seek(0)
         zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
