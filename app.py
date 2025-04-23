@@ -67,12 +67,58 @@ def terminate_child_processes():
     except Exception as e:
         logger.error(f"Error while terminating child processes: {e}")
 
-def check_resources():
-    """Check available disk space, GPU memory, and RAM."""
+def debug_file_locks(directory):
+    """Log files that might be locked in the directory using lsof."""
+    try:
+        result = subprocess.run(['lsof', directory], capture_output=True, text=True)
+        logger.debug(f"lsof output for {directory}:\n{result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to run lsof on {directory}: {e.stderr}")
+    except FileNotFoundError:
+        logger.warning("lsof not installed, cannot debug file locks")
+
+def cleanup_old_requests(current_request_id):
+    """Clean up all directories in /app/colmap_project except the current request's directory."""
+    project_dir = '/app/colmap_project'
+    try:
+        if not os.path.exists(project_dir):
+            logger.debug(f"No project directory found at {project_dir}")
+            return True
+
+        for item in os.listdir(project_dir):
+            item_path = os.path.join(project_dir, item)
+            # Skip the current request's directory
+            if os.path.isdir(item_path) and item != current_request_id:
+                for attempt in range(5):
+                    try:
+                        terminate_child_processes()
+                        debug_file_locks(item_path)
+                        shutil.rmtree(item_path)
+                        logger.debug(f"Successfully removed old directory: {item_path}")
+                        break
+                    except OSError as e:
+                        logger.warning(f"Attempt {attempt+1} to remove {item_path} failed: {e}")
+                        time.sleep(3)
+                else:
+                    logger.error(f"Failed to remove old directory {item_path} after retries")
+                    return False
+        return True
+    except Exception as e:
+        logger.error(f"Cleanup of old requests failed: {e}")
+        return False
+
+def check_resources(current_request_id):
+    """Check available disk space, GPU memory, and RAM after cleaning up old requests."""
+    # Clean up old request directories first
+    if not cleanup_old_requests(current_request_id):
+        logger.error("Failed to clean up old request directories")
+        return False, "Failed to clean up old request directories"
+
     try:
         # Check disk space
         disk = shutil.disk_usage('/app')
         free_gb = disk.free / (1024**3)
+        logger.debug(f"Disk space free: {free_gb:.2f} GB")
         if free_gb < 5:
             logger.error(f"Low disk space: {free_gb:.2f} GB available")
             return False, f"Low disk space: {free_gb:.2f} GB available"
@@ -117,18 +163,8 @@ def check_ram_for_fusion():
 
     if available_ram < 8192:  # Require at least 8 GB for fusion
         logger.error(f"Insufficient RAM for stereo fusion: {available_ram} MB available")
-        return False, f"Insufficient RAM for stereo fusion: {available_ram} MB available"
+        return False, f"Insufficient RAM for fusion: {available_ram} MB available"
     return True, available_ram
-
-def debug_file_locks(directory):
-    """Log files that might be locked in the directory using lsof."""
-    try:
-        result = subprocess.run(['lsof', directory], capture_output=True, text=True)
-        logger.debug(f"lsof output for {directory}:\n{result.stdout}")
-    except subprocess.CalledProcessError as e:
-        logger.warning(f"Failed to run lsof on {directory}: {e.stderr}")
-    except FileNotFoundError:
-        logger.warning("lsof not installed, cannot debug file locks")
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
@@ -185,7 +221,7 @@ def process_video():
         return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
 
     # Check resources before processing
-    resource_ok, resource_message = check_resources()
+    resource_ok, resource_message = check_resources(request_id)
     if not resource_ok:
         return {"status": "error", "message": resource_message}, 500
 
@@ -309,7 +345,7 @@ def process_video():
             return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
 
         # Check resources again before dense reconstruction
-        resource_ok, resource_message = check_resources()
+        resource_ok, resource_message = check_resources(request_id)
         if not resource_ok:
             return {"status": "error", "message": resource_message}, 500
 
@@ -341,7 +377,8 @@ def process_video():
             '--PatchMatchStereo.window_radius', '5',
             '--PatchMatchStereo.num_samples', '10',
             '--PatchMatchStereo.num_iterations', '3',
-            '--PatchMatchStereo.filter', '1'  # Enable for robustness
+            '--PatchMatchStereo.filter', '1',  # Enable for robustness
+            '--PatchMatchStereo.cache_size', '8'  # Set to 8 GB to avoid memory issues
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=1200)
         if process.returncode != 0:
