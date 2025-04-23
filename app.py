@@ -87,7 +87,6 @@ def cleanup_old_requests(current_request_id):
 
         for item in os.listdir(project_dir):
             item_path = os.path.join(project_dir, item)
-            # Skip the current request's directory
             if os.path.isdir(item_path) and item != current_request_id:
                 for attempt in range(5):
                     try:
@@ -109,13 +108,11 @@ def cleanup_old_requests(current_request_id):
 
 def check_resources(current_request_id):
     """Check available disk space, GPU memory, and RAM after cleaning up old requests."""
-    # Clean up old request directories first
     if not cleanup_old_requests(current_request_id):
         logger.error("Failed to clean up old request directories")
         return False, "Failed to clean up old request directories"
 
     try:
-        # Check disk space
         disk = shutil.disk_usage('/app')
         free_gb = disk.free / (1024**3)
         logger.debug(f"Disk space free: {free_gb:.2f} GB")
@@ -123,7 +120,6 @@ def check_resources(current_request_id):
             logger.error(f"Low disk space: {free_gb:.2f} GB available")
             return False, f"Low disk space: {free_gb:.2f} GB available"
 
-        # Check GPU memory
         gpus = GPUtil.getGPUs()
         if not gpus:
             logger.error("No GPU available")
@@ -135,10 +131,9 @@ def check_resources(current_request_id):
             logger.error(f"Insufficient GPU memory: {free_memory_mb} MB available")
             return False, f"Insufficient GPU memory: {free_memory_mb} MB available"
 
-        # Check RAM
-        available_ram = psutil.virtual_memory().available / (1024 ** 2)  # in MB
+        available_ram = psutil.virtual_memory().available / (1024 ** 2)
         logger.debug(f"Available RAM: {available_ram} MB")
-        if available_ram < 8192:  # Require at least 8 GB
+        if available_ram < 8192:
             logger.error(f"Insufficient RAM: {available_ram} MB available")
             return False, f"Insufficient RAM: {available_ram} MB available"
 
@@ -149,10 +144,9 @@ def check_resources(current_request_id):
 
 def check_ram_for_fusion():
     """Check available RAM and log GPU memory before stereo fusion."""
-    available_ram = psutil.virtual_memory().available / (1024 ** 2)  # in MB
+    available_ram = psutil.virtual_memory().available / (1024 ** 2)
     logger.debug(f"Available RAM before stereo fusion: {available_ram} MB")
     
-    # Log GPU memory at the start of stereo fusion
     gpus = GPUtil.getGPUs()
     if gpus:
         gpu = gpus[0]
@@ -161,7 +155,7 @@ def check_ram_for_fusion():
     else:
         logger.warning("No GPU detected before stereo fusion")
 
-    if available_ram < 8192:  # Require at least 8 GB for fusion
+    if available_ram < 8192:
         logger.error(f"Insufficient RAM for stereo fusion: {available_ram} MB available")
         return False, f"Insufficient RAM for fusion: {available_ram} MB available"
     return True, available_ram
@@ -173,7 +167,6 @@ def process_video():
         logger.error("No video provided in request")
         return {"status": "error", "message": "No video provided"}, 400
 
-    # Generate unique directory for this request
     request_id = str(uuid.uuid4())
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
@@ -183,7 +176,6 @@ def process_video():
     dense_dir = os.path.join(base_dir, 'dense')
     poses_dir = os.path.join(base_dir, 'poses')
 
-    # Clean up specific request directory if it exists
     if os.path.exists(base_dir):
         for attempt in range(5):
             try:
@@ -199,7 +191,6 @@ def process_video():
             logger.error(f"Failed to remove {base_dir} after retries")
             return {"status": "error", "message": f"Cannot clean up previous run: {base_dir} is busy"}, 500
 
-    # Create directories
     try:
         os.makedirs(video_dir)
         os.makedirs(images_dir)
@@ -210,7 +201,6 @@ def process_video():
         logger.error(f"Failed to create directories: {e}")
         return {"status": "error", "message": f"Failed to create directories: {e}"}, 500
 
-    # Save uploaded video
     video = request.files['video']
     video_path = os.path.join(video_dir, video.filename)
     logger.debug(f"Saving video: {video_path}")
@@ -220,16 +210,14 @@ def process_video():
         logger.error(f"Failed to save video: {str(e)}")
         return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
 
-    # Check resources before processing
     resource_ok, resource_message = check_resources(request_id)
     if not resource_ok:
         return {"status": "error", "message": resource_message}, 500
 
-    # Extract frames using FFmpeg
     try:
         logger.debug("Extracting frames")
         process = subprocess.Popen([
-            'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1280:720',
+            'ffmpeg', '-i', video_path, '-r', '1', '-vf', 'scale=1280:720',
             os.path.join(images_dir, 'frame_%04d.jpg')
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=300)
@@ -247,9 +235,7 @@ def process_video():
     finally:
         terminate_child_processes()
 
-    # COLMAP processing pipeline
     try:
-        # 1. Create database
         logger.debug("Creating database")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -263,7 +249,6 @@ def process_video():
         logger.debug(f"Database creation output: {stdout}")
         terminate_child_processes()
 
-        # 2. Feature extraction
         logger.debug("Running feature extraction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -287,7 +272,6 @@ def process_video():
         logger.debug(f"Feature extraction output: {stdout}")
         terminate_child_processes()
 
-        # 3. Feature matching
         logger.debug("Running feature matching")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -314,7 +298,6 @@ def process_video():
         logger.debug(f"Feature matching output: {stdout}")
         terminate_child_processes()
 
-        # 4. Sparse reconstruction
         logger.debug("Running sparse reconstruction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -338,18 +321,15 @@ def process_video():
         logger.debug(f"Sparse reconstruction output: {stdout}")
         terminate_child_processes()
 
-        # Verify sparse model
         sparse_model_dir = os.path.join(sparse_dir, '0')
         if not os.path.exists(sparse_model_dir):
             logger.error("Sparse model not found")
             return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
 
-        # Check resources again before dense reconstruction
         resource_ok, resource_message = check_resources(request_id)
         if not resource_ok:
             return {"status": "error", "message": resource_message}, 500
 
-        # 5. Dense reconstruction
         logger.debug("Running dense reconstruction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -358,7 +338,7 @@ def process_video():
             '--input_path', sparse_model_dir,
             '--output_path', dense_dir,
             '--output_type', 'COLMAP',
-            '--max_image_size', '1000'  # Reduced to conserve memory
+            '--max_image_size', '1000'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
@@ -377,8 +357,8 @@ def process_video():
             '--PatchMatchStereo.window_radius', '5',
             '--PatchMatchStereo.num_samples', '10',
             '--PatchMatchStereo.num_iterations', '3',
-            '--PatchMatchStereo.filter', '1',  # Enable for robustness
-            '--PatchMatchStereo.cache_size', '8'  # Set to 8 GB to avoid memory issues
+            '--PatchMatchStereo.filter', '1',
+            '--PatchMatchStereo.cache_size', '8'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=1200)
         if process.returncode != 0:
@@ -387,24 +367,48 @@ def process_video():
         logger.debug(f"Patch match stereo output: {stdout}")
         terminate_child_processes()
 
-        # Check if depth maps were generated
         depth_maps_dir = os.path.join(dense_dir, 'stereo', 'depth_maps')
         if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
             logger.error("No depth maps found after patch_match_stereo")
             return {"status": "error", "message": "No depth maps generated by patch_match_stereo"}, 500
 
-        # Check RAM and log GPU memory before stereo fusion
         ram_ok, available_ram = check_ram_for_fusion()
         if not ram_ok:
             return {"status": "error", "message": available_ram}, 500
 
-        # Set cache size based on available RAM (use 50% of available RAM)
-        available_ram_gb = available_ram / 1024  # Convert MB to GB
-        cache_size = max(1, int(available_ram_gb * 0.5))  # Use 50% of available RAM, at least 1 GB
+        available_ram_gb = available_ram / 1024
+        cache_size = max(1, int(available_ram_gb * 0.5))
+
+        # Verify workspace before stereo fusion
+        logger.debug(f"Verifying workspace at {dense_dir}")
+        required_dirs = ['images', 'sparse', 'stereo']
+        for subdir in required_dirs:
+            subdir_path = os.path.join(dense_dir, subdir)
+            if not os.path.exists(subdir_path):
+                logger.error(f"Workspace directory missing: {subdir_path}")
+                return {"status": "error", "message": f"Workspace directory missing: {subdir_path}"}, 500
+            if not os.access(subdir_path, os.R_OK | os.W_OK):
+                logger.error(f"No read/write permissions for {subdir_path}")
+                return {"status": "error", "message": f"No read/write permissions for {subdir_path}"}, 500
+        logger.debug(f"Workspace verification passed: {dense_dir}")
 
         output_dense_ply = os.path.join(dense_dir, 'fused.ply')
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+        # Test xvfb-run independently
+        try:
+            process = subprocess.Popen(['xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24', 'echo', 'test'],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate(timeout=10)
+            if process.returncode != 0:
+                logger.error(f"xvfb-run test failed: {stderr}")
+                return {"status": "error", "message": f"xvfb-run test failed: {stderr}"}, 500
+            logger.debug(f"xvfb-run test output: {stdout}")
+        except Exception as e:
+            logger.error(f"xvfb-run test failed: {str(e)}")
+            return {"status": "error", "message": f"xvfb-run test failed: {str(e)}"}, 500
+
+        # Run stereo_fusion without xvfb-run to isolate issues
+        logger.debug("Running stereo fusion")
+        cmd = [
             'colmap', 'stereo_fusion',
             '--workspace_path', dense_dir,
             '--workspace_format', 'COLMAP',
@@ -414,20 +418,31 @@ def process_video():
             '--StereoFusion.max_reproj_error', '2.0',
             '--StereoFusion.max_depth_error', '0.25',
             '--StereoFusion.filter_min_tri_angle', '1.0',
-            '--StereoFusion.cache_size', str(cache_size)  # Dynamically set cache size
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=600)
+            '--StereoFusion.cache_size', str(cache_size),
+            '--StereoFusion.gpu_index', '0'
+        ]
+        logger.debug(f"Executing command: {' '.join(cmd)}")
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(timeout=1200)
+        except subprocess.TimeoutExpired:
+            logger.error("Stereo fusion timed out")
+            process.terminate()
+            return {"status": "error", "message": "Stereo fusion timed out"}, 500
+
+        logger.debug(f"Stereo fusion stdout: {stdout}")
+        if stderr:
+            logger.debug(f"Stereo fusion stderr: {stderr}")
         if process.returncode != 0:
             logger.error(f"Stereo fusion failed: {stderr}")
             return {"status": "error", "message": f"Stereo fusion failed: {stderr}"}, 500
-        logger.debug(f"Stereo fusion output: {stdout}")
+        logger.debug(f"Stereo fusion completed successfully")
         terminate_child_processes()
 
         if not os.path.exists(output_dense_ply):
             logger.error("Dense point cloud file not found")
             return {"status": "error", "message": "Dense reconstruction failed: no point cloud generated"}, 500
 
-        # 6. Export camera poses
         logger.debug("Exporting camera poses")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -460,7 +475,6 @@ def process_video():
             logger.error(f"Failed to parse camera poses: {str(e)}")
             return {"status": "error", "message": f"Failed to parse camera poses: {str(e)}"}, 500
 
-        # 7. Export sparse point cloud
         logger.debug("Exporting sparse point cloud")
         output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
         process = subprocess.Popen([
@@ -477,7 +491,6 @@ def process_video():
         logger.debug(f"Point cloud export output: {stdout}")
         terminate_child_processes()
 
-        # Create zip archive
         logger.debug("Creating zip archive")
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
@@ -493,7 +506,6 @@ def process_video():
         with open(zip_temp_path, 'wb') as f:
             f.write(zip_buffer.getvalue())
 
-        # Return JSON response
         response = {
             'status': 'success',
             'message': 'Processing complete',
@@ -503,9 +515,8 @@ def process_video():
             'zip_path': f'/output/{request_id}/reconstruction_bundle.zip'
         }, 200
 
-        # Schedule delayed cleanup (10 minutes to allow file access)
         def cleanup():
-            time.sleep(600)  # Wait 10 minutes
+            time.sleep(600)
             for attempt in range(5):
                 try:
                     terminate_child_processes()
