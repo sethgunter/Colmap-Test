@@ -379,7 +379,6 @@ def process_video():
         available_ram_gb = available_ram / 1024
         cache_size = max(1, int(available_ram_gb * 0.5))
 
-        # Verify workspace before stereo fusion
         logger.debug(f"Verifying workspace at {dense_dir}")
         required_dirs = ['images', 'sparse', 'stereo']
         for subdir in required_dirs:
@@ -392,7 +391,6 @@ def process_video():
                 return {"status": "error", "message": f"No read/write permissions for {subdir_path}"}, 500
         logger.debug(f"Workspace verification passed: {dense_dir}")
 
-        # Check COLMAP stereo_fusion options
         try:
             process = subprocess.Popen(['colmap', 'stereo_fusion', '--help'],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -401,11 +399,9 @@ def process_video():
                 logger.error(f"Failed to check stereo_fusion options: {stderr}")
                 return {"status": "error", "message": f"Failed to check stereo_fusion options: {stderr}"}, 500
             logger.debug(f"stereo_fusion help output: {stdout}")
-            if 'min_tri_angle' not in stdout:
+            use_min_tri_angle = 'min_tri_angle' in stdout
+            if not use_min_tri_angle:
                 logger.warning("min_tri_angle option not supported; omitting")
-                use_min_tri_angle = False
-            else:
-                use_min_tri_angle = True
         except Exception as e:
             logger.error(f"Failed to check stereo_fusion options: {str(e)}")
             return {"status": "error", "message": f"Failed to check stereo_fusion options: {str(e)}"}, 500
@@ -420,8 +416,7 @@ def process_video():
             '--StereoFusion.min_num_pixels', '5',
             '--StereoFusion.max_reproj_error', '2.0',
             '--StereoFusion.max_depth_error', '0.25',
-            '--StereoFusion.cache_size', str(cache_size),
-            '--StereoFusion.gpu_index', '0'
+            '--StereoFusion.cache_size', str(cache_size)
         ]
         if use_min_tri_angle:
             cmd.extend(['--StereoFusion.min_tri_angle', '1.0'])
