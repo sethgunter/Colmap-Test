@@ -392,22 +392,25 @@ def process_video():
                 return {"status": "error", "message": f"No read/write permissions for {subdir_path}"}, 500
         logger.debug(f"Workspace verification passed: {dense_dir}")
 
-        output_dense_ply = os.path.join(dense_dir, 'fused.ply')
-        # Test xvfb-run independently
+        # Check COLMAP stereo_fusion options
         try:
-            process = subprocess.Popen(['xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24', 'echo', 'test'],
+            process = subprocess.Popen(['colmap', 'stereo_fusion', '--help'],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=10)
             if process.returncode != 0:
-                logger.error(f"xvfb-run test failed: {stderr}")
-                return {"status": "error", "message": f"xvfb-run test failed: {stderr}"}, 500
-            logger.debug(f"xvfb-run test output: {stdout}")
+                logger.error(f"Failed to check stereo_fusion options: {stderr}")
+                return {"status": "error", "message": f"Failed to check stereo_fusion options: {stderr}"}, 500
+            logger.debug(f"stereo_fusion help output: {stdout}")
+            if 'min_tri_angle' not in stdout:
+                logger.warning("min_tri_angle option not supported; omitting")
+                use_min_tri_angle = False
+            else:
+                use_min_tri_angle = True
         except Exception as e:
-            logger.error(f"xvfb-run test failed: {str(e)}")
-            return {"status": "error", "message": f"xvfb-run test failed: {str(e)}"}, 500
+            logger.error(f"Failed to check stereo_fusion options: {str(e)}")
+            return {"status": "error", "message": f"Failed to check stereo_fusion options: {str(e)}"}, 500
 
-        # Run stereo_fusion without xvfb-run to isolate issues
-        logger.debug("Running stereo fusion")
+        output_dense_ply = os.path.join(dense_dir, 'fused.ply')
         cmd = [
             'colmap', 'stereo_fusion',
             '--workspace_path', dense_dir,
@@ -417,10 +420,12 @@ def process_video():
             '--StereoFusion.min_num_pixels', '5',
             '--StereoFusion.max_reproj_error', '2.0',
             '--StereoFusion.max_depth_error', '0.25',
-            '--StereoFusion.filter_min_tri_angle', '1.0',
             '--StereoFusion.cache_size', str(cache_size),
             '--StereoFusion.gpu_index', '0'
         ]
+        if use_min_tri_angle:
+            cmd.extend(['--StereoFusion.min_tri_angle', '1.0'])
+        
         logger.debug(f"Executing command: {' '.join(cmd)}")
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
