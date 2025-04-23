@@ -416,7 +416,7 @@ def process_video():
             logger.error(f"Failed to check stereo_fusion options: {str(e)}")
             return {"status": "error", "message": f"Failed to check stereo_fusion options: {str(e)}"}, 500
 
-        output_dense_ply = os.path.join(dense_dir, 'dense.ply')
+        output_dense_ply = os.path.join(base_dir, 'dense.ply')
         cmd = [
             'colmap', 'stereo_fusion',
             '--workspace_path', dense_dir,
