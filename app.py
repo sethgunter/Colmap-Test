@@ -221,7 +221,7 @@ def process_video():
     try:
         logger.debug("Extracting frames")
         process = subprocess.Popen([
-            'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1280:720',
+            'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1920:960',
             os.path.join(images_dir, 'frame_%04d.jpg')
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=300)
@@ -428,8 +428,6 @@ def process_video():
             '--StereoFusion.max_depth_error', '0.25',
             '--StereoFusion.cache_size', str(cache_size)
         ]
-        if use_min_tri_angle:
-            cmd.extend(['--StereoFusion.min_tri_angle', '1.0'])
         
         logger.debug(f"Executing command: {' '.join(cmd)}")
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
