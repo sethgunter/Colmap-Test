@@ -358,8 +358,8 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--PatchMatchStereo.gpu_index', '0',
             '--PatchMatchStereo.max_image_size', '1000',
-            '--PatchMatchStereo.window_radius', '5',
-            '--PatchMatchStereo.num_samples', '10',
+            '--PatchMatchStereo.window_radius', '9',
+            '--PatchMatchStereo.num_samples', '20',
             '--PatchMatchStereo.num_iterations', '5',
             '--PatchMatchStereo.filter', '0',
             '--PatchMatchStereo.cache_size', '8'
@@ -423,8 +423,8 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--input_type', 'geometric',
             '--output_path', output_dense_ply,
-            '--StereoFusion.min_num_pixels', '5',
-            '--StereoFusion.max_reproj_error', '2.0',
+            '--StereoFusion.min_num_pixels', '3',
+            '--StereoFusion.max_reproj_error', '2.5',
             '--StereoFusion.max_depth_error', '0.25',
             '--StereoFusion.cache_size', str(cache_size)
         ]
