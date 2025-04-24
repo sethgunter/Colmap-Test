@@ -359,7 +359,7 @@ def process_video():
             '--input_path', os.path.join(sparse_cubic_dir, 'sparse'),
             '--output_path', dense_dir,
             '--output_type', 'COLMAP',
-            '--max_image_size', '1000'
+            '--max_image_size', '800'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=600)
         if process.returncode != 0:
@@ -374,12 +374,12 @@ def process_video():
             '--workspace_path', dense_dir,
             '--workspace_format', 'COLMAP',
             '--PatchMatchStereo.gpu_index', '0',
-            '--PatchMatchStereo.max_image_size', '1000',
-            '--PatchMatchStereo.window_radius', '5',
-            '--PatchMatchStereo.num_samples', '10',
-            '--PatchMatchStereo.num_iterations', '5',
+            '--PatchMatchStereo.max_image_size', '800',
+            '--PatchMatchStereo.window_radius', '4',
+            '--PatchMatchStereo.num_samples', '5',
+            '--PatchMatchStereo.num_iterations', '3',
             '--PatchMatchStereo.filter', '0',
-            '--PatchMatchStereo.cache_size', '8'
+            '--PatchMatchStereo.cache_size', '4'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=2400)
         if process.returncode != 0:
@@ -440,9 +440,9 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--input_type', 'photometric',
             '--output_path', output_dense_ply,
-            '--StereoFusion.min_num_pixels', '5',
-            '--StereoFusion.max_reproj_error', '2',
-            '--StereoFusion.max_depth_error', '0.25',
+            '--StereoFusion.min_num_pixels', '3',
+            '--StereoFusion.max_reproj_error', '4',
+            '--StereoFusion.max_depth_error', '0.5',
             '--StereoFusion.cache_size', str(cache_size)
         ]
         
