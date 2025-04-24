@@ -426,9 +426,6 @@ def process_video():
                 logger.error(f"Failed to check stereo_fusion options: {stderr}")
                 return {"status": "error", "message": f"Failed to check stereo_fusion options: {stderr}"}, 500
             logger.debug(f"stereo_fusion help output: {stdout}")
-            use_min_tri_angle = 'min_tri_angle' in stdout
-            if not use_min_tri_angle:
-                logger.warning("min_tri_angle option not supported; omitting")
         except Exception as e:
             logger.error(f"Failed to check stereo_fusion options: {str(e)}")
             return {"status": "error", "message": f"Failed to check stereo_fusion options: {str(e)}"}, 500

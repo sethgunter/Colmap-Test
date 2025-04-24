@@ -7,6 +7,7 @@ const downloadButton = document.getElementById('downloadButton');
 const container = document.getElementById('container');
 const progressBar = document.getElementById('progressBar');
 const progressContainer = document.getElementById('progressContainer');
+const timerDisplay = document.getElementById('timer');
 
 async function processVideo() {
     const videoFile = videoInput.files[0];
@@ -19,6 +20,10 @@ async function processVideo() {
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
     message.textContent = 'Uploading video...';
+    timerDisplay.textContent = 'Processing time: 00:00';
+
+    let startTime = null;
+    let timerInterval = null;
 
     try {
         const formData = new FormData();
@@ -53,11 +58,27 @@ async function processVideo() {
             throw new Error(result?.message || 'Server error');
         }
 
+        // Start timer after upload completes
+        startTime = Date.now();
+        timerInterval = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const seconds = (elapsed % 60).toString().padStart(2, '0');
+            timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+        }, 1000);
+
         message.textContent = 'Processing complete';
         progressBar.style.width = '100%';
         viewDenseButton.style.display = 'block';
         viewSparseButton.style.display = 'block';
         downloadButton.style.display = 'block';
+
+        // Stop timer when dense model is ready to view
+        clearInterval(timerInterval);
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+        const seconds = (elapsed % 60).toString().padStart(2, '0');
+        timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
 
         viewDenseButton.onclick = () => {
             container.style.display = 'block';
@@ -81,6 +102,7 @@ async function processVideo() {
     } catch (error) {
         console.error('Processing error:', error);
         message.textContent = `Error: ${error.message}`;
+        if (timerInterval) clearInterval(timerInterval);
     } finally {
         processButton.disabled = false;
         progressContainer.style.display = 'none';
