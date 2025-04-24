@@ -179,6 +179,7 @@ def process_video():
     sparse_dir = os.path.join(base_dir, 'sparse')
     dense_dir = os.path.join(base_dir, 'dense')
     poses_dir = os.path.join(base_dir, 'poses')
+    sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
 
     if os.path.exists(base_dir):
         for attempt in range(5):
@@ -201,6 +202,7 @@ def process_video():
         os.makedirs(sparse_dir)
         os.makedirs(dense_dir)
         os.makedirs(poses_dir, exist_ok=True)
+        os.makedirs(sparse_cubic_dir, exist_ok=True)
     except OSError as e:
         logger.error(f"Failed to create directories: {e}")
         return {"status": "error", "message": f"Failed to create directories: {e}"}, 500
@@ -330,6 +332,21 @@ def process_video():
             logger.error("Sparse model not found")
             return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
 
+        logger.debug("Running cubic reprojection")
+        process = subprocess.Popen([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'sphere_cubic_reprojecer',
+            '--image_path', images_dir,
+            '--input_path', sparse_model_dir,
+            '--output_path', sparse_cubic_dir
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate(timeout=600)
+        if process.returncode != 0:
+            logger.error(f"Cubic reprojection failed: {stderr}")
+            return {"status": "error", "message": f"Cubic reprojection failed: {stderr}"}, 500
+        logger.debug(f"Cubic reprojection output: {stdout}")
+        terminate_child_processes()
+
         resource_ok, resource_message = check_resources(request_id)
         if not resource_ok:
             return {"status": "error", "message": resource_message}, 500
@@ -338,8 +355,8 @@ def process_video():
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'image_undistorter',
-            '--image_path', images_dir,
-            '--input_path', sparse_model_dir,
+            '--image_path', sparse_cubic_dir,
+            '--input_path', os.path.join(sparse_cubic_dir, 'sparse'),
             '--output_path', dense_dir,
             '--output_type', 'COLMAP',
             '--max_image_size', '1000'
