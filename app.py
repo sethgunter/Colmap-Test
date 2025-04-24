@@ -557,24 +557,7 @@ def process_video():
             'zip_path': f'/output/{request_id}/reconstruction_bundle.zip'
         }, 200
 
-        def cleanup():
-            time.sleep(600)
-            for attempt in range(5):
-                try:
-                    terminate_child_processes()
-                    debug_file_locks(base_dir)
-                    shutil.rmtree(base_dir)
-                    logger.debug(f"Post-response cleanup: Successfully removed {base_dir}")
-                    break
-                except OSError as e:
-                    logger.warning(f"Post-response cleanup attempt {attempt+1} failed: {e}")
-                    time.sleep(3)
-            else:
-                logger.error(f"Post-response cleanup failed for {base_dir}")
-
-        from threading import Thread
-        cleanup_thread = Thread(target=cleanup)
-        cleanup_thread.start()
+        
 
         return response
 
