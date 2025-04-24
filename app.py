@@ -212,6 +212,8 @@ def process_video():
     logger.debug(f"Saving video: {video_path}")
     try:
         video.save(video_path)
+        video_save_time = time.time()  # Record timestamp when video is saved
+        logger.debug(f"Video saved at timestamp: {video_save_time}")
     except Exception as e:
         logger.error(f"Failed to save video: {str(e)}")
         return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
@@ -551,10 +553,9 @@ def process_video():
             'sparse_ply_path': f'/output/{request_id}/sparse.ply',
             'dense_ply_path': f'/output/{request_id}/dense.ply',
             'poses_path': f'/output/{request_id}/camera_poses.json',
-            'zip_path': f'/output/{request_id}/reconstruction_bundle.zip'
+            'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
+            'video_save_time': video_save_time  # Include timestamp in response
         }, 200
-
-        
 
         return response
 

@@ -16,13 +16,18 @@ async function processVideo() {
         return;
     }
 
+    if (!timerDisplay) {
+        console.error('Timer display element not found');
+        message.textContent = 'Error: Timer element missing';
+        return;
+    }
+
     processButton.disabled = true;
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
     message.textContent = 'Uploading video...';
     timerDisplay.textContent = 'Processing time: 00:00';
 
-    let startTime = null;
     let timerInterval = null;
 
     try {
@@ -42,7 +47,7 @@ async function processVideo() {
         xhr.responseType = 'json';
         xhr.send(formData);
 
-        await new Promise((resolve, reject) => {
+        const result = await new Promise((resolve, reject) => {
             xhr.onload = () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     resolve(xhr.response);
@@ -53,15 +58,21 @@ async function processVideo() {
             xhr.onerror = () => reject(new Error('Network error during upload'));
         });
 
-        const result = xhr.response;
         if (!result || result.status !== 'success') {
             throw new Error(result?.message || 'Server error');
         }
 
-        // Start timer after upload completes
-        startTime = Date.now();
+        // Start timer using server-provided video save time
+        console.log('Server response received, starting timer');
+        const videoSaveTime = result.video_save_time * 1000; // Convert to milliseconds
+        if (!videoSaveTime) {
+            console.error('Video save time not provided by server');
+            throw new Error('Server did not provide video save time');
+        }
+
         timerInterval = setInterval(() => {
-            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const elapsedMs = Date.now() - videoSaveTime;
+            const elapsed = Math.floor(elapsedMs / 1000);
             const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
             const seconds = (elapsed % 60).toString().padStart(2, '0');
             timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
@@ -74,11 +85,15 @@ async function processVideo() {
         downloadButton.style.display = 'block';
 
         // Stop timer when dense model is ready to view
-        clearInterval(timerInterval);
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
-        const seconds = (elapsed % 60).toString().padStart(2, '0');
-        timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+        console.log('Dense model ready, stopping timer');
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            const elapsedMs = Date.now() - videoSaveTime;
+            const elapsed = Math.floor(elapsedMs / 1000);
+            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const seconds = (elapsed % 60).toString().padStart(2, '0');
+            timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+        }
 
         viewDenseButton.onclick = () => {
             container.style.display = 'block';
@@ -102,7 +117,11 @@ async function processVideo() {
     } catch (error) {
         console.error('Processing error:', error);
         message.textContent = `Error: ${error.message}`;
-        if (timerInterval) clearInterval(timerInterval);
+        if (timerInterval) {
+            console.log('Error occurred, stopping timer');
+            clearInterval(timerInterval);
+            timerDisplay.textContent = 'Processing time: stopped due to error';
+        }
     } finally {
         processButton.disabled = false;
         progressContainer.style.display = 'none';
