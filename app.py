@@ -421,7 +421,7 @@ def process_video():
             'colmap', 'stereo_fusion',
             '--workspace_path', dense_dir,
             '--workspace_format', 'COLMAP',
-            '--input_type', 'geometric',
+            '--input_type', 'photometric',
             '--output_path', output_dense_ply,
             '--StereoFusion.min_num_pixels', '3',
             '--StereoFusion.max_reproj_error', '2.5',
