@@ -363,7 +363,7 @@ def process_video():
             '--output_type', 'COLMAP',
             '--max_image_size', '600'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=600)
+        stdout, stderr = process.communicate(timeout=1200)
         if process.returncode != 0:
             logger.error(f"Image undistortion failed: {stderr}")
             return {"status": "error", "message": f"Image undistortion failed: {stderr}"}, 500
@@ -383,7 +383,7 @@ def process_video():
             '--PatchMatchStereo.filter', '0',
             '--PatchMatchStereo.cache_size', '4'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=2400)
+        stdout, stderr = process.communicate(timeout=5400)
         if process.returncode != 0:
             logger.error(f"Patch match stereo failed: {stderr}")
             return {"status": "error", "message": f"Patch match stereo failed: {stderr}"}, 500
@@ -448,7 +448,7 @@ def process_video():
         logger.debug(f"Executing command: {' '.join(cmd)}")
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            stdout, stderr = process.communicate(timeout=2400)
+            stdout, stderr = process.communicate(timeout=5400)
         except subprocess.TimeoutExpired:
             logger.error("Stereo fusion timed out")
             process.terminate()
