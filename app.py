@@ -375,13 +375,13 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--PatchMatchStereo.gpu_index', '0',
             '--PatchMatchStereo.max_image_size', '1000',
-            '--PatchMatchStereo.window_radius', '9',
-            '--PatchMatchStereo.num_samples', '20',
+            '--PatchMatchStereo.window_radius', '5',
+            '--PatchMatchStereo.num_samples', '10',
             '--PatchMatchStereo.num_iterations', '5',
             '--PatchMatchStereo.filter', '0',
             '--PatchMatchStereo.cache_size', '8'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=1200)
+        stdout, stderr = process.communicate(timeout=2400)
         if process.returncode != 0:
             logger.error(f"Patch match stereo failed: {stderr}")
             return {"status": "error", "message": f"Patch match stereo failed: {stderr}"}, 500
@@ -440,8 +440,8 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--input_type', 'photometric',
             '--output_path', output_dense_ply,
-            '--StereoFusion.min_num_pixels', '3',
-            '--StereoFusion.max_reproj_error', '2.5',
+            '--StereoFusion.min_num_pixels', '5',
+            '--StereoFusion.max_reproj_error', '2',
             '--StereoFusion.max_depth_error', '0.25',
             '--StereoFusion.cache_size', str(cache_size)
         ]
@@ -449,7 +449,7 @@ def process_video():
         logger.debug(f"Executing command: {' '.join(cmd)}")
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            stdout, stderr = process.communicate(timeout=1200)
+            stdout, stderr = process.communicate(timeout=2400)
         except subprocess.TimeoutExpired:
             logger.error("Stereo fusion timed out")
             process.terminate()
