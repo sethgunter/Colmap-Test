@@ -361,7 +361,7 @@ def process_video():
             '--input_path', os.path.join(sparse_cubic_dir, 'sparse'),
             '--output_path', dense_dir,
             '--output_type', 'COLMAP',
-            '--max_image_size', '600'
+            '--max_image_size', '400'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=1200)
         if process.returncode != 0:
@@ -376,15 +376,15 @@ def process_video():
             '--workspace_path', dense_dir,
             '--workspace_format', 'COLMAP',
             '--PatchMatchStereo.gpu_index', '0',
-            '--PatchMatchStereo.max_image_size', '600',
+            '--PatchMatchStereo.max_image_size', '400',
             '--PatchMatchStereo.window_radius', '4',
-            '--PatchMatchStereo.num_samples', '7',
-            '--PatchMatchStereo.num_iterations', '3',
+            '--PatchMatchStereo.num_samples', '3',
+            '--PatchMatchStereo.num_iterations', '2',
             '--PatchMatchStereo.filter', '1',
             '--PatchMatchStereo.filter_min_ncc', '0.5',  # Added
             '--PatchMatchStereo.filter_min_triangulation_angle', '5.0',  # Added
             '--PatchMatchStereo.filter_min_num_consistent', '2',  # Added
-            '--PatchMatchStereo.cache_size', '4'
+            '--PatchMatchStereo.cache_size', '8'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=5400)
         if process.returncode != 0:
@@ -442,10 +442,10 @@ def process_video():
             '--workspace_format', 'COLMAP',
             '--input_type', 'photometric',
             '--output_path', output_dense_ply,
-            '--StereoFusion.min_num_pixels', '10',
+            '--StereoFusion.min_num_pixels', '6',
             '--StereoFusion.check_num_images', '3',
-            '--StereoFusion.max_reproj_error', '1.0',
-            '--StereoFusion.max_depth_error', '0.1',
+            '--StereoFusion.max_reproj_error', '1.5',
+            '--StereoFusion.max_depth_error', '0.2',
             '--StereoFusion.cache_size', str(cache_size)
         ]
         
