@@ -429,38 +429,75 @@ def process_video():
 
         # Filter sparse model for this chunk
         try:
+            # Copy original sparse model
             shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            sparse_image_names = [os.path.basename(img.name) for img in reconstruction.images.values()]
+            reg_image_ids = reconstruction.reg_image_ids()
+            sparse_image_names = [(img_id, os.path.basename(img.name), img_id in reg_image_ids) 
+                                for img_id, img in reconstruction.images.items()]
             logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images: {sparse_image_names[:5]}...")
 
-            # Debug: Log comparison for each image
+            # Filter images using deregister_image
             chunk_image_names_set = set(chunk_image_names)
+            images_to_remove = []
             for img_id, img in reconstruction.images.items():
                 img_name = os.path.basename(img.name)
-                logger.debug(f"Chunk {idx} checking image {img_name}: {'in chunk' if img_name in chunk_image_names_set else 'not in chunk'}")
-
-            # Filter images: Keep only those in chunk
-            images_to_keep = []
-            for img_id, img in list(reconstruction.images.items()):
-                img_name = os.path.basename(img.name)
-                if img_name in chunk_image_names_set:
-                    images_to_keep.append(img_id)
+                if img_name not in chunk_image_names_set:
+                    if reconstruction.exists_image(img_id):
+                        images_to_remove.append((img_id, img_name))
+                    else:
+                        logger.debug(f"Chunk {idx} image ID {img_id} ({img_name}) does not exist in reconstruction")
                 else:
-                    try:
-                        reconstruction.deregister_image(img_id)
-                        logger.debug(f"Chunk {idx} removed image {img_name} (ID: {img_id})")
-                    except Exception as e:
-                        logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
+                    logger.debug(f"Chunk {idx} keeping image {img_name} (ID: {img_id}, Registered: {img_id in reg_image_ids})")
 
-            # Verify filtering
-            filtered_image_names = [os.path.basename(img.name) for img in reconstruction.images.values()]
-            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
-            if len(reconstruction.images) != len(chunk_image_names):
-                logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}: {filtered_image_names}")
-                return {"status": "error", "message": f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"}, 500
+            # Attempt to deregister images
+            for img_id, img_name in images_to_remove:
+                try:
+                    reconstruction.deregister_image(img_id)
+                    logger.debug(f"Chunk {idx} removed image {img_name} (ID: {img_id})")
+                except Exception as e:
+                    logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
 
+            # Write and reload reconstruction to verify
             reconstruction.write(chunk_sparse_dir)
+            reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
+            filtered_image_names = [(img_id, os.path.basename(img.name)) 
+                                for img_id, img in reconstruction.images.items()]
+            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
+
+            # Check if filtering worked
+            if len(reconstruction.images) != len(chunk_image_names):
+                logger.warning(f"Chunk {idx} deregister_image failed, falling back to new reconstruction")
+                # Fallback: Create new reconstruction
+                new_reconstruction = pycolmap.Reconstruction()
+                for cam_id, cam in reconstruction.cameras.items():
+                    new_reconstruction.add_camera(cam)
+                    logger.debug(f"Chunk {idx} added camera ID {cam_id}")
+                
+                valid_image_ids = []
+                for img_id, img in reconstruction.images.items():
+                    img_name = os.path.basename(img.name)
+                    if img_name in chunk_image_names_set and reconstruction.is_image_registered(img_id):
+                        new_reconstruction.add_image(img)
+                        valid_image_ids.append(img_id)
+                        logger.debug(f"Chunk {idx} added image {img_name} (ID: {img_id})")
+                
+                for point3d_id, point3d in reconstruction.points3D.items():
+                    track = point3d.track
+                    has_valid_ref = any(elem.image_id in valid_image_ids for elem in track.elements)
+                    if has_valid_ref:
+                        new_reconstruction.add_point3D(point3d.xyz, point3d.track, point3d.color)
+                        logger.debug(f"Chunk {idx} added point3D ID {point3d_id}")
+                
+                new_reconstruction.write(chunk_sparse_dir)
+                reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
+                filtered_image_names = [(img_id, os.path.basename(img.name)) 
+                                    for img_id, img in reconstruction.images.items()]
+                logger.debug(f"Chunk {idx} sparse model after fallback filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
+                
+                if len(reconstruction.images) != len(chunk_image_names):
+                    logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}: {filtered_image_names}")
+                    return {"status": "error", "message": f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"}, 500
         except Exception as e:
             logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
             return {"status": "error", "message": f"Failed to filter sparse model for chunk {idx}: {str(e)}"}, 500
