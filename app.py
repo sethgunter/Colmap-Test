@@ -512,7 +512,7 @@ def process_video():
                 '--input_path', chunk_sparse_dir,
                 '--output_path', chunk_dir,
                 '--output_type', 'COLMAP',
-                '--max_image_size', '800'
+                '--max_image_size', '600'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=1200)
             if process.returncode != 0:
@@ -531,10 +531,10 @@ def process_video():
                 '--workspace_path', chunk_dir,
                 '--workspace_format', 'COLMAP',
                 '--PatchMatchStereo.gpu_index', '0',
-                '--PatchMatchStereo.max_image_size', '800',
+                '--PatchMatchStereo.max_image_size', '600',
                 '--PatchMatchStereo.window_radius', '4',
                 '--PatchMatchStereo.num_samples', '4',
-                '--PatchMatchStereo.num_iterations', '5',
+                '--PatchMatchStereo.num_iterations', '4',
                 '--PatchMatchStereo.cache_size', '8'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=5400)
