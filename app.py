@@ -11,6 +11,8 @@ import uuid
 import psutil
 import resource
 import GPUtil
+import glob
+import plyfile  # For merging PLY files
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -34,14 +36,12 @@ def add_security_headers(response: Response):
 @app.route('/')
 def index():
     logger.debug("Serving index.html")
-    response = app.send_static_file('index.html')
-    return response
+    return app.send_static_file('index.html')
 
 @app.route('/static/<path:path>')
 def serve_static(path):
     logger.debug(f"Attempting to serve static file: {path}")
-    response = app.send_static_file(path)
-    return response
+    return app.send_static_file(path)
 
 @app.route('/output/<path:path>')
 def serve_output(path):
@@ -164,6 +164,32 @@ def check_ram_for_fusion():
         return False, f"Insufficient RAM for fusion: {available_ram} MB available"
     return True, available_ram
 
+def merge_ply_files(ply_files, output_path):
+    """Merge multiple PLY files into a single PLY file."""
+    all_vertices = []
+    all_colors = []
+    for ply_path in ply_files:
+        ply_data = plyfile.PlyData.read(ply_path)
+        vertices = ply_data['vertex']
+        all_vertices.append(vertices[['x', 'y', 'z']])
+        all_colors.append(vertices[['red', 'green', 'blue']])
+    
+    # Concatenate all vertices and colors
+    merged_vertices = np.concatenate([v.data for v in all_vertices])
+    merged_colors = np.concatenate([c.data for c in all_colors])
+    
+    # Create new vertex element
+    vertex_data = np.array(
+        [(v['x'], v['y'], v['z'], c['red'], c['green'], c['blue']) 
+         for v, c in zip(merged_vertices, merged_colors)],
+        dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    )
+    
+    # Create PLY element and write to file
+    vertex_element = plyfile.PlyElement.describe(vertex_data, 'vertex')
+    plyfile.PlyData([vertex_element]).write(output_path)
+    logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
+
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
@@ -177,7 +203,7 @@ def process_video():
     images_dir = os.path.join(base_dir, 'images')
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
-    dense_dir = os.path.join(base_dir, 'dense')
+    dense_base_dir = os.path.join(base_dir, 'dense_chunks')  # Directory for chunked dense workspaces
     poses_dir = os.path.join(base_dir, 'poses')
     sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
 
@@ -200,7 +226,7 @@ def process_video():
         os.makedirs(video_dir)
         os.makedirs(images_dir)
         os.makedirs(sparse_dir)
-        os.makedirs(dense_dir)
+        os.makedirs(dense_base_dir)
         os.makedirs(poses_dir, exist_ok=True)
         os.makedirs(sparse_cubic_dir, exist_ok=True)
     except OSError as e:
@@ -212,7 +238,7 @@ def process_video():
     logger.debug(f"Saving video: {video_path}")
     try:
         video.save(video_path)
-        video_save_time = time.time()  # Record timestamp when video is saved
+        video_save_time = time.time()
         logger.debug(f"Video saved at timestamp: {video_save_time}")
     except Exception as e:
         logger.error(f"Failed to save video: {str(e)}")
@@ -222,6 +248,7 @@ def process_video():
     if not resource_ok:
         return {"status": "error", "message": resource_message}, 500
 
+    # Extract frames
     try:
         logger.debug("Extracting frames")
         process = subprocess.Popen([
@@ -237,12 +264,8 @@ def process_video():
         logger.error("Frame extraction timed out")
         terminate_child_processes()
         return {"status": "error", "message": "Frame extraction timed out"}, 500
-    except Exception as e:
-        logger.error(f"Frame extraction failed: {str(e)}")
-        return {"status": "error", "message": f"Frame extraction failed: {str(e)}"}, 500
-    finally:
-        terminate_child_processes()
 
+    # Database creation
     try:
         logger.debug("Creating database")
         process = subprocess.Popen([
@@ -254,9 +277,12 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Database creation failed: {stderr}")
             return {"status": "error", "message": f"Database creation failed: {stderr}"}, 500
-        logger.debug(f"Database creation output: {stdout}")
-        terminate_child_processes()
+    except subprocess.TimeoutExpired:
+        logger.error("Database creation timed out")
+        return {"status": "error", "message": "Database creation timed out"}, 500
 
+    # Feature extraction
+    try:
         logger.debug("Running feature extraction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -277,9 +303,12 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
             return {"status": "error", "message": f"Feature extraction failed: {stderr}"}, 500
-        logger.debug(f"Feature extraction output: {stdout}")
-        terminate_child_processes()
+    except subprocess.TimeoutExpired:
+        logger.error("Feature extraction timed out")
+        return {"status": "error", "message": "Feature extraction timed out"}, 500
 
+    # Feature matching
+    try:
         logger.debug("Running feature matching")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -303,9 +332,12 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Feature matching failed: {stderr}")
             return {"status": "error", "message": f"Feature matching failed: {stderr}"}, 500
-        logger.debug(f"Feature matching output: {stdout}")
-        terminate_child_processes()
+    except subprocess.TimeoutExpired:
+        logger.error("Feature matching timed out")
+        return {"status": "error", "message": "Feature matching timed out"}, 500
 
+    # Sparse reconstruction
+    try:
         logger.debug("Running sparse reconstruction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -326,14 +358,17 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Sparse reconstruction failed: {stderr}")
             return {"status": "error", "message": f"Sparse reconstruction failed: {stderr}"}, 500
-        logger.debug(f"Sparse reconstruction output: {stdout}")
-        terminate_child_processes()
+    except subprocess.TimeoutExpired:
+        logger.error("Sparse reconstruction timed out")
+        return {"status": "error", "message": "Sparse reconstruction timed out"}, 500
 
-        sparse_model_dir = os.path.join(sparse_dir, '0')
-        if not os.path.exists(sparse_model_dir):
-            logger.error("Sparse model not found")
-            return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
+    sparse_model_dir = os.path.join(sparse_dir, '0')
+    if not os.path.exists(sparse_model_dir):
+        logger.error("Sparse model not found")
+        return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
 
+    # Cubic reprojection
+    try:
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -346,143 +381,141 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Cubic reprojection failed: {stderr}")
             return {"status": "error", "message": f"Cubic reprojection failed: {stderr}"}, 500
-        logger.debug(f"Cubic reprojection output: {stdout}")
-        terminate_child_processes()
+    except subprocess.TimeoutExpired:
+        logger.error("Cubic reprojection timed out")
+        return {"status": "error", "message": "Cubic reprojection timed out"}, 500
 
-        resource_ok, resource_message = check_resources(request_id)
-        if not resource_ok:
-            return {"status": "error", "message": resource_message}, 500
+    # Split images into chunks
+    chunk_size = 50  # Number of images per chunk
+    overlap = 20     # Number of overlapping images between chunks
+    step = chunk_size - overlap
+    image_list = sorted(glob.glob(os.path.join(sparse_cubic_dir, 'images', '*.jpg')))
+    if not image_list:
+        logger.error("No images found in sparse_cubic_dir/images")
+        return {"status": "error", "message": "No images found after cubic reprojection"}, 500
 
-        logger.debug("Running dense reconstruction")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'image_undistorter',
-            '--image_path', sparse_cubic_dir,
-            '--input_path', os.path.join(sparse_cubic_dir, 'sparse'),
-            '--output_path', dense_dir,
-            '--output_type', 'COLMAP',
-            '--max_image_size', '400'
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=1200)
-        if process.returncode != 0:
-            logger.error(f"Image undistortion failed: {stderr}")
-            return {"status": "error", "message": f"Image undistortion failed: {stderr}"}, 500
-        logger.debug(f"Image undistortion output: {stdout}")
-        terminate_child_processes()
+    chunks = []
+    for i in range(0, len(image_list), step):
+        chunk = image_list[i:i + chunk_size]
+        if chunk:
+            chunks.append(chunk)
+    logger.debug(f"Divided {len(image_list)} images into {len(chunks)} chunks")
 
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'patch_match_stereo',
-            '--workspace_path', dense_dir,
-            '--workspace_format', 'COLMAP',
-            '--PatchMatchStereo.gpu_index', '0',
-            '--PatchMatchStereo.max_image_size', '400',
-            '--PatchMatchStereo.window_radius', '4',
-            '--PatchMatchStereo.num_samples', '3',
-            '--PatchMatchStereo.num_iterations', '2',
-            '--PatchMatchStereo.filter', '1',
-            '--PatchMatchStereo.filter_min_ncc', '0.5',  # Added
-            '--PatchMatchStereo.filter_min_triangulation_angle', '5.0',  # Added
-            '--PatchMatchStereo.filter_min_num_consistent', '2',  # Added
-            '--PatchMatchStereo.cache_size', '8'
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=5400)
-        if process.returncode != 0:
-            logger.error(f"Patch match stereo failed: {stderr}")
-            return {"status": "error", "message": f"Patch match stereo failed: {stderr}"}, 500
-        logger.debug(f"Patch match stereo output: {stdout}")
-        terminate_child_processes()
+    # Process each chunk for dense reconstruction
+    partial_ply_files = []
+    for idx, chunk in enumerate(chunks):
+        chunk_dir = os.path.join(dense_base_dir, f'chunk_{idx}')
+        os.makedirs(chunk_dir, exist_ok=True)
+        chunk_image_dir = os.path.join(chunk_dir, 'images')
+        os.makedirs(chunk_image_dir, exist_ok=True)
 
-        depth_maps_dir = os.path.join(dense_dir, 'stereo', 'depth_maps')
+        # Copy chunk images to chunk-specific image directory
+        for img_path in chunk:
+            shutil.copy(img_path, chunk_image_dir)
+
+        # Undistort images for this chunk
+        try:
+            logger.debug(f"Undistorting images for chunk {idx}")
+            process = subprocess.Popen([
+                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                'colmap', 'image_undistorter',
+                '--image_path', chunk_image_dir,
+                '--input_path', os.path.join(sparse_cubic_dir, 'sparse'),
+                '--output_path', chunk_dir,
+                '--output_type', 'COLMAP',
+                '--max_image_size', '400'
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate(timeout=1200)
+            if process.returncode != 0:
+                logger.error(f"Image undistortion failed for chunk {idx}: {stderr}")
+                return {"status": "error", "message": f"Image undistortion failed for chunk {idx}: {stderr}"}, 500
+        except subprocess.TimeoutExpired:
+            logger.error(f"Image undistortion timed out for chunk {idx}")
+            return {"status": "error", "message": f"Image undistortion timed out for chunk {idx}"}, 500
+
+        # Run patch match stereo for this chunk
+        try:
+            logger.debug(f"Running patch match stereo for chunk {idx}")
+            process = subprocess.Popen([
+                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                'colmap', 'patch_match_stereo',
+                '--workspace_path', chunk_dir,
+                '--workspace_format', 'COLMAP',
+                '--PatchMatchStereo.gpu_index', '0',
+                '--PatchMatchStereo.max_image_size', '400',
+                '--PatchMatchStereo.window_radius', '4',
+                '--PatchMatchStereo.num_samples', '3',
+                '--PatchMatchStereo.num_iterations', '2',
+                '--PatchMatchStereo.filter', '1',
+                '--PatchMatchStereo.filter_min_ncc', '0.5',
+                '--PatchMatchStereo.filter_min_triangulation_angle', '5.0',
+                '--PatchMatchStereo.filter_min_num_consistent', '2',
+                '--PatchMatchStereo.cache_size', '4'  # Reduced to manage memory
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate(timeout=5400)
+            if process.returncode != 0:
+                logger.error(f"Patch match stereo failed for chunk {idx}: {stderr}")
+                return {"status": "error", "message": f"Patch match stereo failed for chunk {idx}: {stderr}"}, 500
+        except subprocess.TimeoutExpired:
+            logger.error(f"Patch match stereo timed out for chunk {idx}")
+            return {"status": "error", "message": f"Patch match stereo timed out for chunk {idx}"}, 500
+
+        # Check depth maps
+        depth_maps_dir = os.path.join(chunk_dir, 'stereo', 'depth_maps')
         if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
-            logger.error("No depth maps found after patch_match_stereo")
-            return {"status": "error", "message": "No depth maps generated by patch_match_stereo"}, 500
-        depth_map_files = os.listdir(depth_maps_dir)
-        logger.debug(f"Found {len(depth_map_files)} depth maps in {depth_maps_dir}")
-        for f in depth_map_files:
-            file_path = os.path.join(depth_maps_dir, f)
-            file_size = os.path.getsize(file_path) / (1024 ** 2)
-            logger.debug(f"Depth map {f}: {file_size:.2f} MB")
+            logger.error(f"No depth maps found for chunk {idx}")
+            return {"status": "error", "message": f"No depth maps generated for chunk {idx}"}, 500
 
+        # Run stereo fusion for this chunk
         ram_ok, available_ram = check_ram_for_fusion()
         if not ram_ok:
             return {"status": "error", "message": available_ram}, 500
-
         available_ram_gb = available_ram / 1024
-        cache_size = max(1, int(available_ram_gb * 0.5))
+        cache_size = min(4, max(1, int(available_ram_gb * 0.5)))  # Cap cache size
 
-        logger.debug(f"Verifying workspace at {dense_dir}")
-        required_dirs = ['images', 'sparse', 'stereo']
-        for subdir in required_dirs:
-            subdir_path = os.path.join(dense_dir, subdir)
-            if not os.path.exists(subdir_path):
-                logger.error(f"Workspace directory missing: {subdir_path}")
-                return {"status": "error", "message": f"Workspace directory missing: {subdir_path}"}, 500
-            if not os.access(subdir_path, os.R_OK | os.W_OK):
-                logger.error(f"No read/write permissions for {subdir_path}")
-                return {"status": "error", "message": f"No read/write permissions for {subdir_path}"}, 500
-        logger.debug(f"Workspace verification passed: {dense_dir}")
-
+        partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
         try:
-            process = subprocess.Popen(['colmap', 'stereo_fusion', '--help'],
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate(timeout=10)
-            if process.returncode != 0:
-                logger.error(f"Failed to check stereo_fusion options: {stderr}")
-                return {"status": "error", "message": f"Failed to check stereo_fusion options: {stderr}"}, 500
-            logger.debug(f"stereo_fusion help output: {stdout}")
-        except Exception as e:
-            logger.error(f"Failed to check stereo_fusion options: {str(e)}")
-            return {"status": "error", "message": f"Failed to check stereo_fusion options: {str(e)}"}, 500
-
-        output_dense_ply = os.path.join(base_dir, 'dense.ply')
-        cmd = [
-            'colmap', 'stereo_fusion',
-            '--workspace_path', dense_dir,
-            '--workspace_format', 'COLMAP',
-            '--input_type', 'photometric',
-            '--output_path', output_dense_ply,
-            '--StereoFusion.min_num_pixels', '6',
-            '--StereoFusion.check_num_images', '3',
-            '--StereoFusion.max_reproj_error', '1.5',
-            '--StereoFusion.max_depth_error', '0.2',
-            '--StereoFusion.cache_size', str(cache_size)
-        ]
-        
-        logger.debug(f"Executing command: {' '.join(cmd)}")
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
+            logger.debug(f"Running stereo fusion for chunk {idx}")
+            process = subprocess.Popen([
+                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                'colmap', 'stereo_fusion',
+                '--workspace_path', chunk_dir,
+                '--workspace_format', 'COLMAP',
+                '--input_type', 'photometric',
+                '--output_path', partial_ply,
+                '--StereoFusion.min_num_pixels', '6',
+                '--StereoFusion.check_num_images', '3',
+                '--StereoFusion.max_reproj_error', '1.5',
+                '--StereoFusion.max_depth_error', '0.2',
+                '--StereoFusion.cache_size', str(cache_size)
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=5400)
+            if process.returncode != 0:
+                logger.error(f"Stereo fusion failed for chunk {idx}: {stderr}")
+                return {"status": "error", "message": f"Stereo fusion failed for chunk {idx}: {stderr}"}, 500
         except subprocess.TimeoutExpired:
-            logger.error("Stereo fusion timed out")
-            process.terminate()
-            return {"status": "error", "message": "Stereo fusion timed out"}, 500
+            logger.error(f"Stereo fusion timed out for chunk {idx}")
+            return {"status": "error", "message": f"Stereo fusion timed out for chunk {idx}"}, 500
 
-        logger.debug(f"Stereo fusion stdout: {stdout}")
-        if stderr:
-            logger.debug(f"Stereo fusion stderr: {stderr}")
-        if process.returncode != 0:
-            logger.error(f"Stereo fusion failed: {stderr}")
-            return {"status": "error", "message": f"Stereo fusion failed: {stderr}"}, 500
-        logger.debug(f"Stereo fusion completed successfully")
-        terminate_child_processes()
+        if not os.path.exists(partial_ply):
+            logger.error(f"Dense point cloud not generated for chunk {idx}")
+            return {"status": "error", "message": f"Dense point cloud not generated for chunk {idx}"}, 500
+        partial_ply_files.append(partial_ply)
 
-        if not os.path.exists(output_dense_ply):
-            logger.error("Dense point cloud file not found")
-            return {"status": "error", "message": "Dense reconstruction failed: no point cloud generated"}, 500
-        # Log dense point cloud size and check permissions
+    # Merge partial dense point clouds
+    output_dense_ply = os.path.join(base_dir, 'dense.ply')
+    try:
+        logger.debug("Merging partial dense point clouds")
+        merge_ply_files(partial_ply_files, output_dense_ply)
         dense_size = os.path.getsize(output_dense_ply) / (1024 ** 2)
-        logger.debug(f"Dense point cloud size: {dense_size:.2f} MB")
-        if not os.access(output_dense_ply, os.R_OK):
-            logger.error(f"No read permissions for {output_dense_ply}")
-            return {"status": "error", "message": f"No read permissions for dense.ply"}, 500
-        # Set read permissions
-        try:
-            os.chmod(output_dense_ply, 0o644)
-            logger.debug(f"Set read permissions for {output_dense_ply}")
-        except Exception as e:
-            logger.warning(f"Failed to set permissions for {output_dense_ply}: {str(e)}")
+        logger.debug(f"Merged dense point cloud size: {dense_size:.2f} MB")
+        os.chmod(output_dense_ply, 0o644)
+    except Exception as e:
+        logger.error(f"Failed to merge point clouds: {str(e)}")
+        return {"status": "error", "message": f"Failed to merge point clouds: {str(e)}"}, 500
 
+    # Export camera poses
+    try:
         logger.debug("Exporting camera poses")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -495,28 +528,31 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Model converter failed: {stderr}")
             return {"status": "error", "message": f"Model converter failed: {stderr}"}, 500
-        logger.debug(f"Model converter output: {stdout}")
-        terminate_child_processes()
+    except subprocess.TimeoutExpired:
+        logger.error("Model conversion timed out")
+        return {"status": "error", "message": "Model conversion timed out"}, 500
 
-        poses_json_path = os.path.join(base_dir, 'camera_poses.json')
-        try:
-            with open(os.path.join(poses_dir, 'images.txt')) as f:
-                lines = f.readlines()[4::2]
-                poses = {}
-                for line in lines:
-                    parts = line.strip().split()
-                    img_name = parts[-1]
-                    qw, qx, qy, qz = map(float, parts[1:5])
-                    tx, ty, tz = map(float, parts[5:8])
-                    poses[img_name] = {'qw': qw, 'qx': qx, 'qy': qy, 'qz': qz, 'tx': tx, 'ty': ty, 'tz': tz}
-            with open(poses_json_path, 'w') as f:
-                json.dump(poses, f, indent=4)
-        except Exception as e:
-            logger.error(f"Failed to parse camera poses: {str(e)}")
-            return {"status": "error", "message": f"Failed to parse camera poses: {str(e)}"}, 500
+    poses_json_path = os.path.join(base_dir, 'camera_poses.json')
+    try:
+        with open(os.path.join(poses_dir, 'images.txt')) as f:
+            lines = f.readlines()[4::2]
+            poses = {}
+            for line in lines:
+                parts = line.strip().split()
+                img_name = parts[-1]
+                qw, qx, qy, qz = map(float, parts[1:5])
+                tx, ty, tz = map(float, parts[5:8])
+                poses[img_name] = {'qw': qw, 'qx': qx, 'qy': qy, 'qz': qz, 'tx': tx, 'ty': ty, 'tz': tz}
+        with open(poses_json_path, 'w') as f:
+            json.dump(poses, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to parse camera poses: {str(e)}")
+        return {"status": "error", "message": f"Failed to parse camera poses: {str(e)}"}, 500
 
+    # Export sparse point cloud
+    output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
+    try:
         logger.debug("Exporting sparse point cloud")
-        output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'model_converter',
@@ -528,46 +564,38 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Sparse point cloud export failed: {stderr}")
             return {"status": "error", "message": f"Sparse point cloud export failed: {stderr}"}, 500
-        logger.debug(f"Point cloud export output: {stdout}")
+        sparse_size = os.path.getsize(output_sparse_ply) / (1024 ** 2)
+        logger.debug(f"Sparse point cloud size: {sparse_size:.2f} MB")
+    except subprocess.TimeoutExpired:
+        logger.error("Sparse point cloud export timed out")
+        return {"status": "error", "message": "Sparse point cloud export timed out"}, 500
+
+    # Create zip archive
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         if os.path.exists(output_sparse_ply):
-            sparse_size = os.path.getsize(output_sparse_ply) / (1024 ** 2)
-            logger.debug(f"Sparse point cloud size: {sparse_size:.2f} MB")
-        else:
-            logger.error("Sparse point cloud file not found")
-        terminate_child_processes()
+            zip_file.write(output_sparse_ply, 'sparse.ply')
+        if os.path.exists(output_dense_ply):
+            zip_file.write(output_dense_ply, 'dense.ply')
+        if os.path.exists(poses_json_path):
+            zip_file.write(poses_json_path, 'camera_poses.json')
 
-        logger.debug("Creating zip archive")
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            if os.path.exists(output_sparse_ply):
-                zip_file.write(output_sparse_ply, 'sparse.ply')
-            if os.path.exists(output_dense_ply):
-                zip_file.write(output_dense_ply, 'dense.ply')
-            if os.path.exists(poses_json_path):
-                zip_file.write(poses_json_path, 'camera_poses.json')
+    zip_buffer.seek(0)
+    zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
+    with open(zip_temp_path, 'wb') as f:
+        f.write(zip_buffer.getvalue())
 
-        zip_buffer.seek(0)
-        zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
-        with open(zip_temp_path, 'wb') as f:
-            f.write(zip_buffer.getvalue())
+    response = {
+        'status': 'success',
+        'message': 'Processing complete',
+        'sparse_ply_path': f'/output/{request_id}/sparse.ply',
+        'dense_ply_path': f'/output/{request_id}/dense.ply',
+        'poses_path': f'/output/{request_id}/camera_poses.json',
+        'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
+        'video_save_time': video_save_time
+    }, 200
 
-        response = {
-            'status': 'success',
-            'message': 'Processing complete',
-            'sparse_ply_path': f'/output/{request_id}/sparse.ply',
-            'dense_ply_path': f'/output/{request_id}/dense.ply',
-            'poses_path': f'/output/{request_id}/camera_poses.json',
-            'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
-            'video_save_time': video_save_time  # Include timestamp in response
-        }, 200
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return {"status": "error", "message": f"Unexpected error: {str(e)}"}, 500
-    finally:
-        terminate_child_processes()
+    return response
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
