@@ -384,12 +384,18 @@ def process_video():
     except subprocess.TimeoutExpired:
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
+    
+    # Log contents of sparse_cubic_dir for debugging
+    cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
+    logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
+    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
+    logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
 
     # Split images into chunks
     chunk_size = 50  # Number of images per chunk
     overlap = 20     # Number of overlapping images between chunks
     step = chunk_size - overlap
-    image_list = sorted(glob.glob(os.path.join(sparse_cubic_dir, 'images', '*.jpg')))
+    image_list = sorted(glob.glob(os.path.join(sparse_cubic_dir, '*.jpg')))
     if not image_list:
         logger.error("No images found in sparse_cubic_dir/images")
         return {"status": "error", "message": "No images found after cubic reprojection"}, 500
