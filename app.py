@@ -389,6 +389,7 @@ def process_video():
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
     
+    # ------------------------------------------------------
     # Log contents of sparse_cubic_dir
     cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
     logger.debug(f"Found {len(cubic_image_files)} perspective images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
@@ -430,27 +431,34 @@ def process_video():
         try:
             shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            sparse_image_names = [img.name for img in reconstruction.images.values()]
+            sparse_image_names = [os.path.basename(img.name) for img in reconstruction.images.values()]
             logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images: {sparse_image_names[:5]}...")
 
-            # Filter images to match chunk
+            # Debug: Log comparison for each image
             chunk_image_names_set = set(chunk_image_names)
-            images_to_remove = []
             for img_id, img in reconstruction.images.items():
-                # Normalize to basename for comparison
                 img_name = os.path.basename(img.name)
-                if img_name not in chunk_image_names_set:
-                    images_to_remove.append(img_id)
-            
-            # Remove unregistered images
-            for img_id in images_to_remove:
-                reconstruction.deregister_image(img_id)
-            
+                logger.debug(f"Chunk {idx} checking image {img_name}: {'in chunk' if img_name in chunk_image_names_set else 'not in chunk'}")
+
+            # Filter images: Keep only those in chunk
+            images_to_keep = []
+            for img_id, img in list(reconstruction.images.items()):
+                img_name = os.path.basename(img.name)
+                if img_name in chunk_image_names_set:
+                    images_to_keep.append(img_id)
+                else:
+                    try:
+                        reconstruction.deregister_image(img_id)
+                        logger.debug(f"Chunk {idx} removed image {img_name} (ID: {img_id})")
+                    except Exception as e:
+                        logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
+
             # Verify filtering
-            filtered_image_names = [img.name for img in reconstruction.images.values()]
+            filtered_image_names = [os.path.basename(img.name) for img in reconstruction.images.values()]
             logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
             if len(reconstruction.images) != len(chunk_image_names):
-                logger.warning(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
+                logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}: {filtered_image_names}")
+                return {"status": "error", "message": f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"}, 500
 
             reconstruction.write(chunk_sparse_dir)
         except Exception as e:
@@ -543,7 +551,7 @@ def process_video():
             logger.error(f"No dense point cloud for chunk {idx}")
             return {"status": "error", "message": f"No dense point cloud for chunk {idx}"}, 500
         partial_ply_files.append(partial_ply)
-        # Merge partial dense point clouds
+        # Merge partial dense point clouds -----------------
     output_dense_ply = os.path.join(base_dir, 'dense.ply')
     try:
         logger.debug("Merging partial dense point clouds")
