@@ -386,19 +386,19 @@ def process_video():
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
     
     # Log contents of sparse_cubic_dir for debugging
-    # cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
-    # logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
-    # cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
-    # logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
+    cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
+    logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
+    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
+    logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
 
-    # Split original images into chunks
+    # Split perspective images into chunks
     chunk_size = 50
     overlap = 20
     step = chunk_size - overlap
-    image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
+    image_list = sorted(glob.glob(os.path.join(sparse_cubic_dir, '*.jpg')))
     if not image_list:
-        logger.error(f"No images found in {images_dir}")
-        return {"status": "error", "message": f"No images found in {images_dir} after frame extraction"}, 500
+        logger.error(f"No images found in {sparse_cubic_dir}")
+        return {"status": "error", "message": f"No images found in {sparse_cubic_dir} after cubic reprojection"}, 500
 
     chunks = []
     for i in range(0, len(image_list), step):
@@ -419,9 +419,14 @@ def process_video():
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
 
-        # Log images in chunk for debugging
+        # Log images in chunk and verify existence
         chunk_image_names = [os.path.basename(img) for img in chunk]
         logger.debug(f"Chunk {idx} contains {len(chunk_image_names)} images: {chunk_image_names[:5]}...")
+        for img_name in chunk_image_names:
+            img_path = os.path.join(chunk_image_dir, img_name)
+            if not os.path.exists(img_path):
+                logger.error(f"Image not found in chunk {idx}: {img_path}")
+                return {"status": "error", "message": f"Image not found in chunk {idx}: {img_path}"}, 500
 
         # Undistort images for this chunk
         try:
