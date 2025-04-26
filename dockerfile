@@ -41,8 +41,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip3 install flask psutil gunicorn GPUtil plyfile
-RUN pip3 install pycolmap
+RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy
+
 
 # Copy SphereSfM/COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
