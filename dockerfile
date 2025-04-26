@@ -1,4 +1,3 @@
-# Dockerfile
 ARG UBUNTU_VERSION=22.04
 ARG CUDA_VERSION=11.7.1
 ARG CUDA_ARCHITECTURES=75
@@ -42,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip3 install flask psutil gunicorn GPUtil
+RUN pip3 install flask psutil gunicorn GPUtil plyfile
 
 # Copy SphereSfM/COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
