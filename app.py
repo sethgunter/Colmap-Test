@@ -13,6 +13,7 @@ import resource
 import GPUtil
 import glob
 import plyfile  # For merging PLY files
+import pycolmap
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -385,74 +386,87 @@ def process_video():
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
     
-    # Log contents of sparse_cubic_dir for debugging
-    cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
-    logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
+    # Log contents of sparse_cubic_dir to confirm images are there
     cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
-    logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
+    logger.debug(f"Found {len(cubic_image_files)} perspective images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
+    if not cubic_image_files:
+        logger.error(f"No perspective images found in {sparse_cubic_dir}")
+        return {"status": "error", "message": f"No perspective images found in {sparse_cubic_dir}"}, 500
 
-    # Split perspective images into chunks
-    chunk_size = 50
-    overlap = 20
+    # Chunk the perspective images
+    chunk_size = 50  # Adjust based on your memory limits (50 works for most setups)
+    overlap = 20     # Overlap ensures consistency across chunks
     step = chunk_size - overlap
-    image_list = sorted(glob.glob(os.path.join(sparse_cubic_dir, '*.jpg')))
-    if not image_list:
-        logger.error(f"No images found in {sparse_cubic_dir}")
-        return {"status": "error", "message": f"No images found in {sparse_cubic_dir} after cubic reprojection"}, 500
-
-    chunks = []
-    for i in range(0, len(image_list), step):
-        chunk = image_list[i:i + chunk_size]
-        if chunk:
-            chunks.append(chunk)
-    logger.debug(f"Divided {len(image_list)} images into {len(chunks)} chunks")
+    image_list = sorted(cubic_image_files)
+    chunks = [image_list[i:i + chunk_size] for i in range(0, len(image_list), step) if image_list[i:i + chunk_size]]
+    logger.debug(f"Split {len(image_list)} images into {len(chunks)} chunks")
 
     # Process each chunk for dense reconstruction
     partial_ply_files = []
     for idx, chunk in enumerate(chunks):
+        # Set up chunk workspace
         chunk_dir = os.path.join(dense_base_dir, f'chunk_{idx}')
         os.makedirs(chunk_dir, exist_ok=True)
         chunk_image_dir = os.path.join(chunk_dir, 'images')
         os.makedirs(chunk_image_dir, exist_ok=True)
+        chunk_sparse_dir = os.path.join(chunk_dir, 'sparse')
+        os.makedirs(chunk_sparse_dir, exist_ok=True)
 
-        # Copy chunk images to chunk-specific image directory
+        # Copy images to chunk workspace
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
-
-        # Log images in chunk and verify existence
         chunk_image_names = [os.path.basename(img) for img in chunk]
-        logger.debug(f"Chunk {idx} contains {len(chunk_image_names)} images: {chunk_image_names[:5]}...")
-        for img_name in chunk_image_names:
-            img_path = os.path.join(chunk_image_dir, img_name)
-            if not os.path.exists(img_path):
-                logger.error(f"Image not found in chunk {idx}: {img_path}")
-                return {"status": "error", "message": f"Image not found in chunk {idx}: {img_path}"}, 500
+        logger.debug(f"Chunk {idx}: {len(chunk_image_names)} images copied: {chunk_image_names[:5]}...")
 
-        # Undistort images for this chunk
+        # Verify images exist
+        for img_name in chunk_image_names:
+            if not os.path.exists(os.path.join(chunk_image_dir, img_name)):
+                logger.error(f"Image missing in chunk {idx}: {img_name}")
+                return {"status": "error", "message": f"Image missing in chunk {idx}: {img_name}"}, 500
+
+        # Filter sparse model for this chunk
+        try:
+            shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
+            reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
+            logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images")
+
+            # Keep only images in this chunk
+            chunk_image_names_set = set(chunk_image_names)
+            images_to_keep = {img_id: img for img_id, img in reconstruction.images.items()
+                            if img.name in chunk_image_names_set}
+            for img_id in list(reconstruction.images.keys()):
+                if img_id not in images_to_keep:
+                    reconstruction.deregister_image(img_id)
+            reconstruction.write(chunk_sparse_dir)
+            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
+        except Exception as e:
+            logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
+            return {"status": "error", "message": f"Sparse model filtering failed for chunk {idx}: {str(e)}"}, 500
+
+        # Run image_undistorter
         try:
             logger.debug(f"Undistorting images for chunk {idx}")
             process = subprocess.Popen([
                 'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
                 'colmap', 'image_undistorter',
                 '--image_path', chunk_image_dir,
-                '--input_path', os.path.join(sparse_cubic_dir, 'sparse'),
+                '--input_path', chunk_sparse_dir,
                 '--output_path', chunk_dir,
                 '--output_type', 'COLMAP',
                 '--max_image_size', '400'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=1200)
             if process.returncode != 0:
-                logger.error(f"Image undistortion failed for chunk {idx}: {stderr}")
-                return {"status": "error", "message": f"Image undistortion failed for chunk {idx}: {stderr}"}, 500
-            logger.debug(f"Image undistortion output for chunk {idx}: {stdout}")
+                logger.error(f"Undistortion failed for chunk {idx}: {stderr}")
+                return {"status": "error", "message": f"Undistortion failed for chunk {idx}: {stderr}"}, 500
         except subprocess.TimeoutExpired:
-            logger.error(f"Image undistortion timed out for chunk {idx}")
-            return {"status": "error", "message": f"Image undistortion timed out for chunk {idx}"}, 500
+            logger.error(f"Undistortion timed out for chunk {idx}")
+            return {"status": "error", "message": f"Undistortion timed out for chunk {idx}"}, 500
 
-        # Run patch match stereo for this chunk
+        # Run patch_match_stereo
         try:
             logger.debug(f"Running patch match stereo for chunk {idx}")
-            cmd = [
+            process = subprocess.Popen([
                 'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
                 'colmap', 'patch_match_stereo',
                 '--workspace_path', chunk_dir,
@@ -467,31 +481,26 @@ def process_video():
                 '--PatchMatchStereo.filter_min_triangulation_angle', '5.0',
                 '--PatchMatchStereo.filter_min_num_consistent', '2',
                 '--PatchMatchStereo.cache_size', '4'
-            ]
-            logger.debug(f"Executing patch match stereo for chunk {idx}: {' '.join(cmd)}")
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=5400)
             if process.returncode != 0:
-                logger.error(f"Patch match stereo failed for chunk {idx} with exit code {process.returncode}: {stderr}")
-                return {"status": "error", "message": f"Patch match stereo failed for chunk {idx}: {stderr}"}, 500
-            logger.debug(f"Patch match stereo output for chunk {idx}: {stdout}")
+                logger.error(f"Patch match failed for chunk {idx}: {stderr}")
+                return {"status": "error", "message": f"Patch match failed for chunk {idx}: {stderr}"}, 500
         except subprocess.TimeoutExpired:
-            logger.error(f"Patch match stereo timed out for chunk {idx}")
-            return {"status": "error", "message": f"Patch match stereo timed out for chunk {idx}"}, 500
+            logger.error(f"Patch match timed out for chunk {idx}")
+            return {"status": "error", "message": f"Patch match timed out for chunk {idx}"}, 500
 
-        # Check depth maps
+        # Verify depth maps
         depth_maps_dir = os.path.join(chunk_dir, 'stereo', 'depth_maps')
         if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
-            logger.error(f"No depth maps found for chunk {idx}")
-            return {"status": "error", "message": f"No depth maps generated for chunk {idx}"}, 500
+            logger.error(f"No depth maps for chunk {idx}")
+            return {"status": "error", "message": f"No depth maps for chunk {idx}"}, 500
 
-        # Run stereo fusion for this chunk
+        # Run stereo_fusion
         ram_ok, available_ram = check_ram_for_fusion()
         if not ram_ok:
             return {"status": "error", "message": available_ram}, 500
-        available_ram_gb = available_ram / 1024
-        cache_size = min(4, max(1, int(available_ram_gb * 0.5)))
-
+        cache_size = min(4, max(1, int((available_ram / 1024) * 0.5)))
         partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
         try:
             logger.debug(f"Running stereo fusion for chunk {idx}")
@@ -517,10 +526,9 @@ def process_video():
             return {"status": "error", "message": f"Stereo fusion timed out for chunk {idx}"}, 500
 
         if not os.path.exists(partial_ply):
-            logger.error(f"Dense point cloud not generated for chunk {idx}")
-            return {"status": "error", "message": f"Dense point cloud not generated for chunk {idx}"}, 500
+            logger.error(f"No dense point cloud for chunk {idx}")
+            return {"status": "error", "message": f"No dense point cloud for chunk {idx}"}, 500
         partial_ply_files.append(partial_ply)
-
     # Merge partial dense point clouds
     output_dense_ply = os.path.join(base_dir, 'dense.ply')
     try:
