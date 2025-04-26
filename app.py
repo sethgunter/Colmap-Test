@@ -151,13 +151,13 @@ def check_resources(current_request_id):
 def check_ram_for_fusion():
     """Check available RAM and log GPU memory before stereo fusion."""
     available_ram = psutil.virtual_memory().available / (1024 ** 2)
-    logger.debug(f"Available RAM before stereo fusion: {available_ram} MB")
+    # logger.debug(f"Available RAM before stereo fusion: {available_ram} MB")
     
     gpus = GPUtil.getGPUs()
     if gpus:
         gpu = gpus[0]
         free_memory_mb = gpu.memoryFree
-        logger.debug(f"GPU memory free before stereo fusion: {free_memory_mb} MB")
+        # logger.debug(f"GPU memory free before stereo fusion: {free_memory_mb} MB")
     else:
         logger.warning("No GPU detected before stereo fusion")
 
