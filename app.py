@@ -398,7 +398,7 @@ def process_video():
     #     return {"status": "error", "message": f"No perspective images found in {sparse_cubic_dir}"}, 500
 
     # Chunk the perspective images
-    chunk_size = 50
+    chunk_size = 100
     overlap = 20
     step = chunk_size - overlap
     image_list = sorted(cubic_image_files)
