@@ -392,10 +392,10 @@ def process_video():
     # ------------------------------------------------------
     # Log contents of sparse_cubic_dir
     cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
-    logger.debug(f"Found {len(cubic_image_files)} perspective images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
-    if not cubic_image_files:
-        logger.error(f"No perspective images found in {sparse_cubic_dir}")
-        return {"status": "error", "message": f"No perspective images found in {sparse_cubic_dir}"}, 500
+    # logger.debug(f"Found {len(cubic_image_files)} perspective images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
+    # if not cubic_image_files:
+    #     logger.error(f"No perspective images found in {sparse_cubic_dir}")
+    #     return {"status": "error", "message": f"No perspective images found in {sparse_cubic_dir}"}, 500
 
     # Chunk the perspective images
     chunk_size = 50
@@ -419,7 +419,7 @@ def process_video():
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
         chunk_image_names = [os.path.basename(img) for img in chunk]
-        logger.debug(f"Chunk {idx}: {len(chunk_image_names)} images copied: {chunk_image_names[:5]}...")
+        logger.debug(f"Chunk {idx}: {len(chunk_image_names)}")
 
         # Verify images exist
         for img_name in chunk_image_names:
@@ -435,7 +435,7 @@ def process_video():
             reg_image_ids = reconstruction.reg_image_ids()
             sparse_image_names = [(img_id, os.path.basename(img.name), img_id in reg_image_ids) 
                                 for img_id, img in reconstruction.images.items()]
-            logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images: {sparse_image_names[:5]}...")
+            logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images")
 
             # Filter images using deregister_image
             chunk_image_names_set = set(chunk_image_names)
@@ -447,14 +447,14 @@ def process_video():
                         images_to_remove.append((img_id, img_name))
                     else:
                         logger.debug(f"Chunk {idx} image ID {img_id} ({img_name}) does not exist in reconstruction")
-                else:
-                    logger.debug(f"Chunk {idx} keeping image {img_name} (ID: {img_id}, Registered: {img_id in reg_image_ids})")
+               
+                
 
             # Attempt to deregister images
             for img_id, img_name in images_to_remove:
                 try:
                     reconstruction.deregister_image(img_id)
-                    logger.debug(f"Chunk {idx} removed image {img_name} (ID: {img_id})")
+                    # logger.debug(f"Chunk {idx} removed image {img_name} (ID: {img_id})")
                 except Exception as e:
                     logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
 
@@ -463,7 +463,7 @@ def process_video():
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
             filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                 for img_id, img in reconstruction.images.items()]
-            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
+            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
 
             # Check if filtering worked
             if len(reconstruction.images) != len(chunk_image_names):
@@ -493,7 +493,7 @@ def process_video():
                 reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
                 filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                     for img_id, img in reconstruction.images.items()]
-                logger.debug(f"Chunk {idx} sparse model after fallback filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
+                logger.debug(f"Chunk {idx} sparse model after fallback filtered to {len(reconstruction.images)} images")
                 
                 if len(reconstruction.images) != len(chunk_image_names):
                     logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}: {filtered_image_names}")
