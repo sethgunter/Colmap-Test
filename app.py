@@ -385,20 +385,20 @@ def process_video():
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
     
-    # # Log contents of sparse_cubic_dir for debugging
+    # Log contents of sparse_cubic_dir for debugging
     # cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
     # logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
     # cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
     # logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
 
-    # Split images into chunks
-    chunk_size = 50  # Number of images per chunk
-    overlap = 20     # Number of overlapping images between chunks
+    # Split original images into chunks
+    chunk_size = 50
+    overlap = 20
     step = chunk_size - overlap
-    image_list = sorted(glob.glob(os.path.join(sparse_cubic_dir, '*.jpg')))
+    image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
     if not image_list:
-        logger.error("No images found in sparse_cubic_dir/images")
-        return {"status": "error", "message": "No images found after cubic reprojection"}, 500
+        logger.error(f"No images found in {images_dir}")
+        return {"status": "error", "message": f"No images found in {images_dir} after frame extraction"}, 500
 
     chunks = []
     for i in range(0, len(image_list), step):
@@ -419,6 +419,10 @@ def process_video():
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
 
+        # Log images in chunk for debugging
+        chunk_image_names = [os.path.basename(img) for img in chunk]
+        logger.debug(f"Chunk {idx} contains {len(chunk_image_names)} images: {chunk_image_names[:5]}...")
+
         # Undistort images for this chunk
         try:
             logger.debug(f"Undistorting images for chunk {idx}")
@@ -435,12 +439,14 @@ def process_video():
             if process.returncode != 0:
                 logger.error(f"Image undistortion failed for chunk {idx}: {stderr}")
                 return {"status": "error", "message": f"Image undistortion failed for chunk {idx}: {stderr}"}, 500
+            logger.debug(f"Image undistortion output for chunk {idx}: {stdout}")
         except subprocess.TimeoutExpired:
             logger.error(f"Image undistortion timed out for chunk {idx}")
             return {"status": "error", "message": f"Image undistortion timed out for chunk {idx}"}, 500
 
         # Run patch match stereo for this chunk
         try:
+            logger.debug(f"Running patch match stereo for chunk {idx}")
             cmd = [
                 'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
                 'colmap', 'patch_match_stereo',
@@ -479,7 +485,7 @@ def process_video():
         if not ram_ok:
             return {"status": "error", "message": available_ram}, 500
         available_ram_gb = available_ram / 1024
-        cache_size = min(4, max(1, int(available_ram_gb * 0.5)))  # Cap cache size
+        cache_size = min(4, max(1, int(available_ram_gb * 0.5)))
 
         partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
         try:
