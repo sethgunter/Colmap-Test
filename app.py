@@ -385,11 +385,11 @@ def process_video():
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
     
-    # Log contents of sparse_cubic_dir for debugging
-    cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
-    logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
-    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
-    logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
+    # # Log contents of sparse_cubic_dir for debugging
+    # cubic_files = glob.glob(os.path.join(sparse_cubic_dir, '*'))
+    # logger.debug(f"Contents of {sparse_cubic_dir}: {cubic_files}")
+    # cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
+    # logger.debug(f"Found {len(cubic_image_files)} images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
 
     # Split images into chunks
     chunk_size = 50  # Number of images per chunk
@@ -441,8 +441,7 @@ def process_video():
 
         # Run patch match stereo for this chunk
         try:
-            logger.debug(f"Running patch match stereo for chunk {idx}")
-            process = subprocess.Popen([
+            cmd = [
                 'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
                 'colmap', 'patch_match_stereo',
                 '--workspace_path', chunk_dir,
@@ -456,12 +455,15 @@ def process_video():
                 '--PatchMatchStereo.filter_min_ncc', '0.5',
                 '--PatchMatchStereo.filter_min_triangulation_angle', '5.0',
                 '--PatchMatchStereo.filter_min_num_consistent', '2',
-                '--PatchMatchStereo.cache_size', '4'  # Reduced to manage memory
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                '--PatchMatchStereo.cache_size', '4'
+            ]
+            logger.debug(f"Executing patch match stereo for chunk {idx}: {' '.join(cmd)}")
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=5400)
             if process.returncode != 0:
-                logger.error(f"Patch match stereo failed for chunk {idx}: {stderr}")
+                logger.error(f"Patch match stereo failed for chunk {idx} with exit code {process.returncode}: {stderr}")
                 return {"status": "error", "message": f"Patch match stereo failed for chunk {idx}: {stderr}"}, 500
+            logger.debug(f"Patch match stereo output for chunk {idx}: {stdout}")
         except subprocess.TimeoutExpired:
             logger.error(f"Patch match stereo timed out for chunk {idx}")
             return {"status": "error", "message": f"Patch match stereo timed out for chunk {idx}"}, 500
