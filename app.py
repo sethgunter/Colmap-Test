@@ -167,27 +167,29 @@ def check_ram_for_fusion():
     return True, available_ram
 
 def merge_ply_files(ply_files, output_path):
-    """Merge multiple PLY files into a single PLY file."""
+    """Merge multiple PLY files into a single PLY file, handling variable vertex attributes."""
     all_vertices = []
     all_colors = []
     for ply_path in ply_files:
         ply_data = plyfile.PlyData.read(ply_path)
         vertices = ply_data['vertex']
-        all_vertices.append(vertices[['x', 'y', 'z']])
-        all_colors.append(vertices[['red', 'green', 'blue']])
+        # Extract only x, y, z and red, green, blue, ignoring other attributes
+        coords = np.array([(v['x'], v['y'], v['z']) for v in vertices], dtype=np.float32)
+        colors = np.array([(v['red'], v['green'], v['blue']) for v in vertices], dtype=np.uint8)
+        all_vertices.append(coords)
+        all_colors.append(colors)
     
     # Concatenate all vertices and colors
-    merged_vertices = np.concatenate([v.data for v in all_vertices])
-    merged_colors = np.concatenate([c.data for c in all_colors])
+    merged_vertices = np.concatenate(all_vertices)
+    merged_colors = np.concatenate(all_colors)
     
     # Create new vertex element
     vertex_data = np.array(
-        [(v['x'], v['y'], v['z'], c['red'], c['green'], c['blue']) 
-         for v, c in zip(merged_vertices, merged_colors)],
+        [(v[0], v[1], v[2], c[0], c[1], c[2]) for v, c in zip(merged_vertices, merged_colors)],
         dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     )
     
-    # Create PLY element and write to file
+    # Write to PLY file
     vertex_element = plyfile.PlyElement.describe(vertex_data, 'vertex')
     plyfile.PlyData([vertex_element]).write(output_path)
     logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
@@ -387,7 +389,7 @@ def process_video():
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
     
-    # Log contents of sparse_cubic_dir to confirm images are there
+    # Log contents of sparse_cubic_dir
     cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
     logger.debug(f"Found {len(cubic_image_files)} perspective images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
     if not cubic_image_files:
@@ -395,8 +397,8 @@ def process_video():
         return {"status": "error", "message": f"No perspective images found in {sparse_cubic_dir}"}, 500
 
     # Chunk the perspective images
-    chunk_size = 50  # Adjust based on your memory limits (50 works for most setups)
-    overlap = 20     # Overlap ensures consistency across chunks
+    chunk_size = 50
+    overlap = 20
     step = chunk_size - overlap
     image_list = sorted(cubic_image_files)
     chunks = [image_list[i:i + chunk_size] for i in range(0, len(image_list), step) if image_list[i:i + chunk_size]]
@@ -405,7 +407,6 @@ def process_video():
     # Process each chunk for dense reconstruction
     partial_ply_files = []
     for idx, chunk in enumerate(chunks):
-        # Set up chunk workspace
         chunk_dir = os.path.join(dense_base_dir, f'chunk_{idx}')
         os.makedirs(chunk_dir, exist_ok=True)
         chunk_image_dir = os.path.join(chunk_dir, 'images')
@@ -413,7 +414,7 @@ def process_video():
         chunk_sparse_dir = os.path.join(chunk_dir, 'sparse')
         os.makedirs(chunk_sparse_dir, exist_ok=True)
 
-        # Copy images to chunk workspace
+        # Copy chunk images
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
         chunk_image_names = [os.path.basename(img) for img in chunk]
@@ -433,16 +434,15 @@ def process_video():
 
             # Keep only images in this chunk
             chunk_image_names_set = set(chunk_image_names)
-            images_to_keep = {img_id: img for img_id, img in reconstruction.images.items()
-                            if img.name in chunk_image_names_set}
-            for img_id in list(reconstruction.images.keys()):
-                if img_id not in images_to_keep:
-                    reconstruction.deregister_image(img_id)
+            images_to_remove = [img_id for img_id, img in reconstruction.images.items()
+                            if img.name not in chunk_image_names_set]
+            for img_id in images_to_remove:
+                reconstruction.deregister_image(img_id)
             reconstruction.write(chunk_sparse_dir)
             logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
         except Exception as e:
             logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
-            return {"status": "error", "message": f"Sparse model filtering failed for chunk {idx}: {str(e)}"}, 500
+            return {"status": "error", "message": f"Failed to filter sparse model for chunk {idx}: {str(e)}"}, 500
 
         # Run image_undistorter
         try:
@@ -530,7 +530,7 @@ def process_video():
             logger.error(f"No dense point cloud for chunk {idx}")
             return {"status": "error", "message": f"No dense point cloud for chunk {idx}"}, 500
         partial_ply_files.append(partial_ply)
-    # Merge partial dense point clouds
+        # Merge partial dense point clouds
     output_dense_ply = os.path.join(base_dir, 'dense.ply')
     try:
         logger.debug("Merging partial dense point clouds")
