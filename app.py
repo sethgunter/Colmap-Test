@@ -512,7 +512,7 @@ def process_video():
                 '--input_path', chunk_sparse_dir,
                 '--output_path', chunk_dir,
                 '--output_type', 'COLMAP',
-                '--max_image_size', '600'
+                '--max_image_size', '800'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=1200)
             if process.returncode != 0:
@@ -531,15 +531,11 @@ def process_video():
                 '--workspace_path', chunk_dir,
                 '--workspace_format', 'COLMAP',
                 '--PatchMatchStereo.gpu_index', '0',
-                '--PatchMatchStereo.max_image_size', '600',
+                '--PatchMatchStereo.max_image_size', '800',
                 '--PatchMatchStereo.window_radius', '4',
-                '--PatchMatchStereo.num_samples', '3',
-                '--PatchMatchStereo.num_iterations', '2',
-                '--PatchMatchStereo.filter', '1',
-                '--PatchMatchStereo.filter_min_ncc', '0.5',
-                '--PatchMatchStereo.filter_min_triangulation_angle', '5.0',
-                '--PatchMatchStereo.filter_min_num_consistent', '2',
-                '--PatchMatchStereo.cache_size', '4'
+                '--PatchMatchStereo.num_samples', '4',
+                '--PatchMatchStereo.num_iterations', '5',
+                '--PatchMatchStereo.cache_size', '8'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=5400)
             if process.returncode != 0:
@@ -570,10 +566,10 @@ def process_video():
                 '--workspace_format', 'COLMAP',
                 '--input_type', 'photometric',
                 '--output_path', partial_ply,
-                '--StereoFusion.min_num_pixels', '6',
+                '--StereoFusion.min_num_pixels', '3',
                 '--StereoFusion.check_num_images', '3',
-                '--StereoFusion.max_reproj_error', '1.5',
-                '--StereoFusion.max_depth_error', '0.2',
+                '--StereoFusion.max_reproj_error', '3',
+                '--StereoFusion.max_depth_error', '0.5',
                 '--StereoFusion.cache_size', str(cache_size)
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate(timeout=5400)
