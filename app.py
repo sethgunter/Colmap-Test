@@ -430,16 +430,29 @@ def process_video():
         try:
             shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images")
+            sparse_image_names = [img.name for img in reconstruction.images.values()]
+            logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images: {sparse_image_names[:5]}...")
 
-            # Keep only images in this chunk
+            # Filter images to match chunk
             chunk_image_names_set = set(chunk_image_names)
-            images_to_remove = [img_id for img_id, img in reconstruction.images.items()
-                            if img.name not in chunk_image_names_set]
+            images_to_remove = []
+            for img_id, img in reconstruction.images.items():
+                # Normalize to basename for comparison
+                img_name = os.path.basename(img.name)
+                if img_name not in chunk_image_names_set:
+                    images_to_remove.append(img_id)
+            
+            # Remove unregistered images
             for img_id in images_to_remove:
                 reconstruction.deregister_image(img_id)
+            
+            # Verify filtering
+            filtered_image_names = [img.name for img in reconstruction.images.values()]
+            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images: {filtered_image_names[:5]}...")
+            if len(reconstruction.images) != len(chunk_image_names):
+                logger.warning(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
+
             reconstruction.write(chunk_sparse_dir)
-            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
         except Exception as e:
             logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
             return {"status": "error", "message": f"Failed to filter sparse model for chunk {idx}: {str(e)}"}, 500
