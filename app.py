@@ -12,7 +12,7 @@ import psutil
 import resource
 import GPUtil
 import glob
-import plyfile  # For merging PLY files
+import plyfile
 import pycolmap
 import numpy as np
 
@@ -151,13 +151,10 @@ def check_resources(current_request_id):
 def check_ram_for_fusion():
     """Check available RAM and log GPU memory before stereo fusion."""
     available_ram = psutil.virtual_memory().available / (1024 ** 2)
-    # logger.debug(f"Available RAM before stereo fusion: {available_ram} MB")
-    
     gpus = GPUtil.getGPUs()
     if gpus:
         gpu = gpus[0]
         free_memory_mb = gpu.memoryFree
-        # logger.debug(f"GPU memory free before stereo fusion: {free_memory_mb} MB")
     else:
         logger.warning("No GPU detected before stereo fusion")
 
@@ -173,41 +170,33 @@ def merge_ply_files(ply_files, output_path):
     for ply_path in ply_files:
         ply_data = plyfile.PlyData.read(ply_path)
         vertices = ply_data['vertex']
-        # Extract only x, y, z and red, green, blue, ignoring other attributes
         coords = np.array([(v['x'], v['y'], v['z']) for v in vertices], dtype=np.float32)
         colors = np.array([(v['red'], v['green'], v['blue']) for v in vertices], dtype=np.uint8)
         all_vertices.append(coords)
         all_colors.append(colors)
     
-    # Concatenate all vertices and colors
     merged_vertices = np.concatenate(all_vertices)
     merged_colors = np.concatenate(all_colors)
     
-    # Create new vertex element
     vertex_data = np.array(
         [(v[0], v[1], v[2], c[0], c[1], c[2]) for v, c in zip(merged_vertices, merged_colors)],
         dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     )
     
-    # Write to PLY file
     vertex_element = plyfile.PlyElement.describe(vertex_data, 'vertex')
     plyfile.PlyData([vertex_element]).write(output_path)
     logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
 
-@app.route('/process-video', methods=['POST'])
-def process_video():
-    logger.debug("Received POST request to /process-video")
-    if 'video' not in request.files:
-        logger.error("No video provided in request")
-        return {"status": "error", "message": "No video provided"}, 400
-
+@app.route('/process-input', methods=['POST'])
+def process_input():
+    logger.debug("Received POST request to /process-input")
     request_id = str(uuid.uuid4())
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
-    dense_base_dir = os.path.join(base_dir, 'dense_chunks')  # Directory for chunked dense workspaces
+    dense_base_dir = os.path.join(base_dir, 'dense_chunks')
     poses_dir = os.path.join(base_dir, 'poses')
     sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
 
@@ -237,37 +226,65 @@ def process_video():
         logger.error(f"Failed to create directories: {e}")
         return {"status": "error", "message": f"Failed to create directories: {e}"}, 500
 
-    video = request.files['video']
-    video_path = os.path.join(video_dir, video.filename)
-    logger.debug(f"Saving video: {video_path}")
-    try:
-        video.save(video_path)
-        video_save_time = time.time()
-        logger.debug(f"Video saved at timestamp: {video_save_time}")
-    except Exception as e:
-        logger.error(f"Failed to save video: {str(e)}")
-        return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
+    is_video = 'video' in request.files and request.files['video'].filename != ''
+    is_images = 'images' in request.files
+
+    if not is_video and not is_images:
+        logger.error("No video or images provided in request")
+        return {"status": "error", "message": "No video or images provided"}, 400
+    if is_video and is_images:
+        logger.error("Both video and images provided; please provide only one")
+        return {"status": "error", "message": "Please provide either a video or images, not both"}, 400
+
+    input_save_time = time.time()
+    if is_video:
+        video = request.files['video']
+        video_path = os.path.join(video_dir, video.filename)
+        logger.debug(f"Saving video: {video_path}")
+        try:
+            video.save(video_path)
+            logger.debug(f"Video saved at timestamp: {input_save_time}")
+        except Exception as e:
+            logger.error(f"Failed to save video: {str(e)}")
+            return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
+    else:
+        image_files = request.files.getlist('images')
+        if not image_files or all(f.filename == '' for f in image_files):
+            logger.error("No valid image files provided")
+            return {"status": "error", "message": "No valid image files provided"}, 400
+        logger.debug(f"Saving {len(image_files)} images")
+        try:
+            for i, image in enumerate(image_files):
+                # Save images with sequential naming for consistency
+                ext = os.path.splitext(image.filename)[1]
+                image_path = os.path.join(images_dir, f"frame_{i:04d}{ext}")
+                image.save(image_path)
+            logger.debug(f"Images saved at timestamp: {input_save_time}")
+        except Exception as e:
+            logger.error(f"Failed to save images: {str(e)}")
+            return {"status": "error", "message": f"Failed to save images: {str(e)}"}, 500
 
     resource_ok, resource_message = check_resources(request_id)
     if not resource_ok:
         return {"status": "error", "message": resource_message}, 500
 
-    # Extract frames
-    try:
-        logger.debug("Extracting frames")
-        process = subprocess.Popen([
-            'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1920:960',
-            os.path.join(images_dir, 'frame_%04d.jpg')
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=300)
-        if process.returncode != 0:
-            logger.error(f"Frame extraction failed: {stderr}")
-            return {"status": "error", "message": f"Frame extraction failed: {stderr}"}, 500
-        logger.debug(f"Frame extraction output: {stdout}")
-    except subprocess.TimeoutExpired:
-        logger.error("Frame extraction timed out")
-        terminate_child_processes()
-        return {"status": "error", "message": "Frame extraction timed out"}, 500
+    if is_video:
+        # Extract frames
+        try:
+            logger.debug("Extracting frames")
+            process = subprocess.Popen([
+                'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1920:960',
+                os.path.join(images_dir, 'frame_%04d.jpg')
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate(timeout=300)
+            if process.returncode != 0:
+                logger.error(f"Frame extraction failed: {stderr}")
+                return {"status": "error", "message": f"Frame extraction failed: {stderr}"}, 500
+            logger.debug(f"Frame extraction output: {stdout}")
+        except subprocess.TimeoutExpired:
+            logger.error("Frame extraction timed out")
+            terminate_child_processes()
+            return {"status": "error", "message": "Frame extraction timed out"}, 500
 
     # Database creation
     try:
@@ -388,16 +405,8 @@ def process_video():
     except subprocess.TimeoutExpired:
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
-    
-    # ------------------------------------------------------
-    # Log contents of sparse_cubic_dir
-    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
-    # logger.debug(f"Found {len(cubic_image_files)} perspective images in {sparse_cubic_dir}: {cubic_image_files[:5]}...")
-    # if not cubic_image_files:
-    #     logger.error(f"No perspective images found in {sparse_cubic_dir}")
-    #     return {"status": "error", "message": f"No perspective images found in {sparse_cubic_dir}"}, 500
 
-    # Chunk the perspective images
+    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
     chunk_size = 100
     overlap = 20
     step = chunk_size - overlap
@@ -405,7 +414,6 @@ def process_video():
     chunks = [image_list[i:i + chunk_size] for i in range(0, len(image_list), step) if image_list[i:i + chunk_size]]
     logger.debug(f"Split {len(image_list)} images into {len(chunks)} chunks")
 
-    # Process each chunk for dense reconstruction
     partial_ply_files = []
     for idx, chunk in enumerate(chunks):
         chunk_dir = os.path.join(dense_base_dir, f'chunk_{idx}')
@@ -415,29 +423,19 @@ def process_video():
         chunk_sparse_dir = os.path.join(chunk_dir, 'sparse')
         os.makedirs(chunk_sparse_dir, exist_ok=True)
 
-        # Copy chunk images
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
         chunk_image_names = [os.path.basename(img) for img in chunk]
         logger.debug(f"Chunk {idx}: {len(chunk_image_names)}")
 
-        # Verify images exist
         for img_name in chunk_image_names:
             if not os.path.exists(os.path.join(chunk_image_dir, img_name)):
                 logger.error(f"Image missing in chunk {idx}: {img_name}")
                 return {"status": "error", "message": f"Image missing in chunk {idx}: {img_name}"}, 500
 
-        # Filter sparse model for this chunk
         try:
-            # Copy original sparse model
             shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            reg_image_ids = reconstruction.reg_image_ids()
-            sparse_image_names = [(img_id, os.path.basename(img.name), img_id in reg_image_ids) 
-                                for img_id, img in reconstruction.images.items()]
-            logger.debug(f"Chunk {idx} sparse model originally has {len(reconstruction.images)} images")
-
-            # Filter images using deregister_image
             chunk_image_names_set = set(chunk_image_names)
             images_to_remove = []
             for img_id, img in reconstruction.images.items():
@@ -445,34 +443,24 @@ def process_video():
                 if img_name not in chunk_image_names_set:
                     if reconstruction.exists_image(img_id):
                         images_to_remove.append((img_id, img_name))
-                    else:
-                        logger.debug(f"Chunk {idx} image ID {img_id} ({img_name}) does not exist in reconstruction")
-               
-                
 
-            # Attempt to deregister images
             for img_id, img_name in images_to_remove:
                 try:
                     reconstruction.deregister_image(img_id)
-                    # logger.debug(f"Chunk {idx} removed image {img_name} (ID: {img_id})")
                 except Exception as e:
                     logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
 
-            # Write and reload reconstruction to verify
             reconstruction.write(chunk_sparse_dir)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
             filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                 for img_id, img in reconstruction.images.items()]
             logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
 
-            # Check if filtering worked
             if len(reconstruction.images) != len(chunk_image_names):
                 logger.warning(f"Chunk {idx} deregister_image failed, falling back to new reconstruction")
-                # Fallback: Create new reconstruction
                 new_reconstruction = pycolmap.Reconstruction()
                 for cam_id, cam in reconstruction.cameras.items():
                     new_reconstruction.add_camera(cam)
-                    logger.debug(f"Chunk {idx} added camera ID {cam_id}")
                 
                 valid_image_ids = []
                 for img_id, img in reconstruction.images.items():
@@ -480,29 +468,25 @@ def process_video():
                     if img_name in chunk_image_names_set and reconstruction.is_image_registered(img_id):
                         new_reconstruction.add_image(img)
                         valid_image_ids.append(img_id)
-                        logger.debug(f"Chunk {idx} added image {img_name} (ID: {img_id})")
                 
                 for point3d_id, point3d in reconstruction.points3D.items():
                     track = point3d.track
                     has_valid_ref = any(elem.image_id in valid_image_ids for elem in track.elements)
                     if has_valid_ref:
                         new_reconstruction.add_point3D(point3d.xyz, point3d.track, point3d.color)
-                        logger.debug(f"Chunk {idx} added point3D ID {point3d_id}")
                 
                 new_reconstruction.write(chunk_sparse_dir)
                 reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
                 filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                     for img_id, img in reconstruction.images.items()]
-                logger.debug(f"Chunk {idx} sparse model after fallback filtered to {len(reconstruction.images)} images")
                 
                 if len(reconstruction.images) != len(chunk_image_names):
-                    logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}: {filtered_image_names}")
+                    logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
                     return {"status": "error", "message": f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"}, 500
         except Exception as e:
             logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
             return {"status": "error", "message": f"Failed to filter sparse model for chunk {idx}: {str(e)}"}, 500
 
-        # Run image_undistorter
         try:
             logger.debug(f"Undistorting images for chunk {idx}")
             process = subprocess.Popen([
@@ -522,7 +506,6 @@ def process_video():
             logger.error(f"Undistortion timed out for chunk {idx}")
             return {"status": "error", "message": f"Undistortion timed out for chunk {idx}"}, 500
 
-        # Run patch_match_stereo
         try:
             logger.debug(f"Running patch match stereo for chunk {idx}")
             process = subprocess.Popen([
@@ -545,13 +528,11 @@ def process_video():
             logger.error(f"Patch match timed out for chunk {idx}")
             return {"status": "error", "message": f"Patch match timed out for chunk {idx}"}, 500
 
-        # Verify depth maps
         depth_maps_dir = os.path.join(chunk_dir, 'stereo', 'depth_maps')
         if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
             logger.error(f"No depth maps for chunk {idx}")
             return {"status": "error", "message": f"No depth maps for chunk {idx}"}, 500
 
-        # Run stereo_fusion
         ram_ok, available_ram = check_ram_for_fusion()
         if not ram_ok:
             return {"status": "error", "message": available_ram}, 500
@@ -584,7 +565,7 @@ def process_video():
             logger.error(f"No dense point cloud for chunk {idx}")
             return {"status": "error", "message": f"No dense point cloud for chunk {idx}"}, 500
         partial_ply_files.append(partial_ply)
-        # Merge partial dense point clouds -----------------
+
     output_dense_ply = os.path.join(base_dir, 'dense.ply')
     try:
         logger.debug("Merging partial dense point clouds")
@@ -596,7 +577,6 @@ def process_video():
         logger.error(f"Failed to merge point clouds: {str(e)}")
         return {"status": "error", "message": f"Failed to merge point clouds: {str(e)}"}, 500
 
-    # Export camera poses
     try:
         logger.debug("Exporting camera poses")
         process = subprocess.Popen([
@@ -631,7 +611,6 @@ def process_video():
         logger.error(f"Failed to parse camera poses: {str(e)}")
         return {"status": "error", "message": f"Failed to parse camera poses: {str(e)}"}, 500
 
-    # Export sparse point cloud
     output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
     try:
         logger.debug("Exporting sparse point cloud")
@@ -652,7 +631,6 @@ def process_video():
         logger.error("Sparse point cloud export timed out")
         return {"status": "error", "message": "Sparse point cloud export timed out"}, 500
 
-    # Create zip archive
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         if os.path.exists(output_sparse_ply):
@@ -667,17 +645,15 @@ def process_video():
     with open(zip_temp_path, 'wb') as f:
         f.write(zip_buffer.getvalue())
 
-    response = {
+    return {
         'status': 'success',
         'message': 'Processing complete',
         'sparse_ply_path': f'/output/{request_id}/sparse.ply',
         'dense_ply_path': f'/output/{request_id}/dense.ply',
         'poses_path': f'/output/{request_id}/camera_poses.json',
         'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
-        'video_save_time': video_save_time
+        'input_save_time': input_save_time
     }, 200
-
-    return response
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)

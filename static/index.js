@@ -1,4 +1,5 @@
 const videoInput = document.getElementById('videoInput');
+const imagesInput = document.getElementById('imagesInput');
 const processButton = document.getElementById('processButton');
 const message = document.getElementById('message');
 const viewDenseButton = document.getElementById('viewDenseButton');
@@ -9,10 +10,15 @@ const progressBar = document.getElementById('progressBar');
 const progressContainer = document.getElementById('progressContainer');
 const timerDisplay = document.getElementById('timer');
 
-async function processVideo() {
+async function processInput() {
     const videoFile = videoInput.files[0];
-    if (!videoFile) {
-        message.textContent = 'Please select a video file.';
+    const imageFiles = imagesInput.files;
+    if (!videoFile && (!imageFiles || imageFiles.length === 0)) {
+        message.textContent = 'Please select a video or a folder of images.';
+        return;
+    }
+    if (videoFile && imageFiles.length > 0) {
+        message.textContent = 'Please select either a video or images, not both.';
         return;
     }
 
@@ -25,14 +31,20 @@ async function processVideo() {
     processButton.disabled = true;
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
-    message.textContent = 'Uploading video...';
+    message.textContent = videoFile ? 'Uploading video...' : 'Uploading images...';
     timerDisplay.textContent = 'Processing time: 00:00';
 
     let timerInterval = null;
 
     try {
         const formData = new FormData();
-        formData.append('video', videoFile);
+        if (videoFile) {
+            formData.append('video', videoFile);
+        } else {
+            for (let i = 0; i < imageFiles.length; i++) {
+                formData.append('images', imageFiles[i]);
+            }
+        }
 
         const xhr = new XMLHttpRequest();
         xhr.upload.addEventListener('progress', (e) => {
@@ -62,16 +74,15 @@ async function processVideo() {
             throw new Error(result?.message || 'Server error');
         }
 
-        // Start timer using server-provided video save time
         console.log('Server response received, starting timer');
-        const videoSaveTime = result.video_save_time * 1000; // Convert to milliseconds
-        if (!videoSaveTime) {
-            console.error('Video save time not provided by server');
-            throw new Error('Server did not provide video save time');
+        const inputSaveTime = result.input_save_time * 1000; // Convert to milliseconds
+        if (!inputSaveTime) {
+            console.error('Input save time not provided by server');
+            throw new Error('Server did not provide input save time');
         }
 
         timerInterval = setInterval(() => {
-            const elapsedMs = Date.now() - videoSaveTime;
+            const elapsedMs = Date.now() - inputSaveTime;
             const elapsed = Math.floor(elapsedMs / 1000);
             const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
             const seconds = (elapsed % 60).toString().padStart(2, '0');
@@ -84,11 +95,10 @@ async function processVideo() {
         viewSparseButton.style.display = 'block';
         downloadButton.style.display = 'block';
 
-        // Stop timer when dense model is ready to view
         console.log('Dense model ready, stopping timer');
         if (timerInterval) {
             clearInterval(timerInterval);
-            const elapsedMs = Date.now() - videoSaveTime;
+            const elapsedMs = Date.now() - inputSaveTime;
             const elapsed = Math.floor(elapsedMs / 1000);
             const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
             const seconds = (elapsed % 60).toString().padStart(2, '0');
@@ -261,4 +271,4 @@ function initThreeJS(plyPath, posesPath) {
     }
 }
 
-processButton.addEventListener('click', processVideo);
+processButton.addEventListener('click', processInput);

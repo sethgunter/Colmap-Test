@@ -3,14 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video to 3D Reconstruction</title>
+    <title>Video or Images to 3D Reconstruction</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/loaders/PLYLoader.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #progressContainer { width: 100%; background-color: #f3f3f3; }
+        #progressBar { transition: width 0.3s; }
+        #container { width: 100%; height: 600px; }
+        button, input { margin: 10px 0; }
+        #message, #timer { margin: 10px 0; }
+    </style>
 </head>
 <body>
+    <h2>Upload Video or Image Folder</h2>
+    <label for="videoInput">Upload a video:</label>
     <input type="file" id="videoInput" accept="video/*">
-    <button id="processButton">Process Video</button>
+    <br>
+    <label for="imagesInput">Or upload a folder:</label>
+    <input type="file" id="imagesInput" accept="image/*" webkitdirectory multiple>
+    <br>
+    <button id="processButton">Process Input</button>
     <div id="progressContainer" style="display: none;">
         <div id="progressBar" style="width: 0%; background-color: #4CAF50; height: 20px;"></div>
     </div>
