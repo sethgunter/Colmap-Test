@@ -42,16 +42,20 @@ def index():
 
 @app.route('/static/<path:path>')
 def serve_static(path):
-    logger.debug(f"Attempting to serve static file: {path}")
+    logger.debug(f"Serving static file: {path}")
+    file_path = os.path.join(app.static_folder, path)
+    if not os.path.exists(file_path):
+        logger.error(f"Static file not found: {file_path}")
+        return {"status": "error", "message": f"Static file not found: {path}"}, 404
     return app.send_static_file(path)
 
 @app.route('/output/<path:path>')
 def serve_output(path):
-    logger.debug(f"Attempting to serve output file: {path}")
+    logger.debug(f"Serving output file: {path}")
     try:
         file_path = os.path.join('/app/colmap_project', path)
         if not os.path.exists(file_path):
-            logger.error(f"Output file not found: {path}")
+            logger.error(f"Output file not found: {file_path}")
             return {"status": "error", "message": f"File not found: {path}"}, 404
         return send_file(file_path)
     except Exception as e:
@@ -187,9 +191,10 @@ def merge_ply_files(ply_files, output_path):
     plyfile.PlyData([vertex_element]).write(output_path)
     logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
 
-@app.route('/process-input', methods=['POST'])
-def process_input():
-    logger.debug("Received POST request to /process-input")
+@app.route('/process-video', methods=['POST'])
+def process_video():
+    logger.debug("Received POST request to /process-video")
+    logger.debug(f"Request files: {list(request.files.keys())}")
     request_id = str(uuid.uuid4())
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
@@ -255,7 +260,6 @@ def process_input():
         logger.debug(f"Saving {len(image_files)} images")
         try:
             for i, image in enumerate(image_files):
-                # Save images with sequential naming for consistency
                 ext = os.path.splitext(image.filename)[1]
                 image_path = os.path.join(images_dir, f"frame_{i:04d}{ext}")
                 image.save(image_path)
@@ -269,7 +273,6 @@ def process_input():
         return {"status": "error", "message": resource_message}, 500
 
     if is_video:
-        # Extract frames
         try:
             logger.debug("Extracting frames")
             process = subprocess.Popen([
@@ -286,7 +289,6 @@ def process_input():
             terminate_child_processes()
             return {"status": "error", "message": "Frame extraction timed out"}, 500
 
-    # Database creation
     try:
         logger.debug("Creating database")
         process = subprocess.Popen([
@@ -302,7 +304,6 @@ def process_input():
         logger.error("Database creation timed out")
         return {"status": "error", "message": "Database creation timed out"}, 500
 
-    # Feature extraction
     try:
         logger.debug("Running feature extraction")
         process = subprocess.Popen([
@@ -328,7 +329,6 @@ def process_input():
         logger.error("Feature extraction timed out")
         return {"status": "error", "message": "Feature extraction timed out"}, 500
 
-    # Feature matching
     try:
         logger.debug("Running feature matching")
         process = subprocess.Popen([
@@ -357,7 +357,6 @@ def process_input():
         logger.error("Feature matching timed out")
         return {"status": "error", "message": "Feature matching timed out"}, 500
 
-    # Sparse reconstruction
     try:
         logger.debug("Running sparse reconstruction")
         process = subprocess.Popen([
@@ -388,7 +387,6 @@ def process_input():
         logger.error("Sparse model not found")
         return {"status": "error", "message": "Sparse reconstruction failed: no model generated"}, 500
 
-    # Cubic reprojection
     try:
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
