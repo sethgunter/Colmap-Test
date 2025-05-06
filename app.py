@@ -300,6 +300,10 @@ def process_video():
         if process.returncode != 0:
             logger.error(f"Database creation failed: {stderr}")
             return {"status": "error", "message": f"Database creation failed: {stderr}"}, 500
+        logger.debug(f"Database creation output: {stdout}")
+        # Log all image filenames in images_dir after database creation, in order saved
+        image_files = glob.glob(os.path.join(images_dir, '*'))
+        logger.debug(f"Images in {images_dir} ({len(image_files)}): {[os.path.basename(f) for f in image_files]}")
     except subprocess.TimeoutExpired:
         logger.error("Database creation timed out")
         return {"status": "error", "message": "Database creation timed out"}, 500
