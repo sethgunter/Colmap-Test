@@ -538,7 +538,19 @@ def process_video():
 
         ram_ok, available_ram = check_ram_for_fusion()
         if not ram_ok:
+            logger.error(f"Insufficient RAM for chunk {idx}: {available_ram}")
             return {"status": "error", "message": available_ram}, 500
+        gpus = GPUtil.getGPUs()
+        free_memory_mb = gpus[0].memoryFree if gpus else 0
+        if free_memory_mb < 3000:
+            logger.error(f"Insufficient GPU memory for chunk {idx}: {free_memory_mb} MB")
+            return {"status": "error", "message": f"Insufficient GPU memory for chunk {idx}"}, 500
+        disk = shutil.disk_usage('/app')
+        free_gb = disk.free / (1024**3)
+        if free_gb < 1:
+            logger.error(f"Insufficient disk space for chunk {idx}: {free_gb:.2f} GB")
+            return {"status": "error", "message": f"Insufficient disk space for chunk {idx}"}, 500
+        logger.debug(f"Resources for chunk {idx}: RAM={available_ram} MB, GPU={free_memory_mb} MB, Disk={free_gb} GB")
         cache_size = min(4, max(1, int((available_ram / 1024) * 0.5)))
         partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
         try:
@@ -555,14 +567,25 @@ def process_video():
                 '--StereoFusion.max_reproj_error', '3',
                 '--StereoFusion.max_depth_error', '0.5',
                 '--StereoFusion.cache_size', str(cache_size)
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)  # Line buffering
             stdout, stderr = process.communicate()
             if process.returncode != 0:
                 logger.error(f"Stereo fusion failed for chunk {idx}: {stderr}")
+                logger.debug(f"Raw stderr content: {repr(stderr)}")  # Log raw stderr for inspection
+                if not stderr:
+                    logger.error(f"No stderr output from stereo fusion for chunk {idx}")
+                # Log stdout for additional context
+                logger.debug(f"stdout content: {repr(stdout)}")
+                # Force flush logs
+                for handler in logger.handlers:
+                    handler.flush()
                 return {"status": "error", "message": f"Stereo fusion failed for chunk {idx}: {stderr}"}, 500
         except subprocess.TimeoutExpired:
             logger.error(f"Stereo fusion timed out for chunk {idx}")
             return {"status": "error", "message": f"Stereo fusion timed out for chunk {idx}"}, 500
+        except Exception as e:
+            logger.error(f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}")
+            return {"status": "error", "message": f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}"}, 500
 
         if not os.path.exists(partial_ply):
             logger.error(f"No dense point cloud for chunk {idx}")
