@@ -67,4 +67,4 @@ ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 EXPOSE 8080
 
 # Run Flask app with Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "36000", "--limit-request-line", "8192", "--limit-request-fields", "2000", "--limit-request-field-size", "8192", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "36000", "--limit-request-line", "8192", "--limit-request-fields", "2000", "app:app"]
