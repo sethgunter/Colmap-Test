@@ -279,7 +279,7 @@ def process_video():
                 'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1920:960',
                 os.path.join(images_dir, 'frame_%04d.jpg')
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate(timeout=300)
+            stdout, stderr = process.communicate()
             if process.returncode != 0:
                 logger.error(f"Frame extraction failed: {stderr}")
                 return {"status": "error", "message": f"Frame extraction failed: {stderr}"}, 500
@@ -296,7 +296,7 @@ def process_video():
             'colmap', 'database_creator',
             '--database_path', database_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=60)
+        stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Database creation failed: {stderr}")
             return {"status": "error", "message": f"Database creation failed: {stderr}"}, 500
@@ -325,9 +325,9 @@ def process_video():
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=600)
+        stdout, stderr = process.communicate()
         logger.debug(f"Feature extraction stdout: {stdout}")
-        logger.error(f"Feature extraction stderr: {stderr}")
+        
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
             return {"status": "error", "message": f"Feature extraction failed: {stderr}"}, 500
@@ -355,7 +355,8 @@ def process_video():
             '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '30'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=600)
+        stdout, stderr = process.communicate()
+        logger.debug(f"Feature matching stdout: {stdout}")
         if process.returncode != 0:
             logger.error(f"Feature matching failed: {stderr}")
             return {"status": "error", "message": f"Feature matching failed: {stderr}"}, 500
@@ -380,7 +381,8 @@ def process_video():
             '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=600)
+        stdout, stderr = process.communicate()
+        logger.debug(f"sparse reconstruction stdout: {stdout}")
         if process.returncode != 0:
             logger.error(f"Sparse reconstruction failed: {stderr}")
             return {"status": "error", "message": f"Sparse reconstruction failed: {stderr}"}, 500
@@ -402,7 +404,7 @@ def process_video():
             '--input_path', sparse_model_dir,
             '--output_path', sparse_cubic_dir
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=600)
+        stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Cubic reprojection failed: {stderr}")
             return {"status": "error", "message": f"Cubic reprojection failed: {stderr}"}, 500
@@ -502,7 +504,7 @@ def process_video():
                 '--output_type', 'COLMAP',
                 '--max_image_size', '600'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate(timeout=1200)
+            stdout, stderr = process.communicate()
             if process.returncode != 0:
                 logger.error(f"Undistortion failed for chunk {idx}: {stderr}")
                 return {"status": "error", "message": f"Undistortion failed for chunk {idx}: {stderr}"}, 500
@@ -524,7 +526,7 @@ def process_video():
                 '--PatchMatchStereo.num_iterations', '4',
                 '--PatchMatchStereo.cache_size', '8'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate(timeout=5400)
+            stdout, stderr = process.communicate()
             if process.returncode != 0:
                 logger.error(f"Patch match failed for chunk {idx}: {stderr}")
                 return {"status": "error", "message": f"Patch match failed for chunk {idx}: {stderr}"}, 500
@@ -557,7 +559,7 @@ def process_video():
                 '--StereoFusion.max_depth_error', '0.5',
                 '--StereoFusion.cache_size', str(cache_size)
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate(timeout=5400)
+            stdout, stderr = process.communicate()
             if process.returncode != 0:
                 logger.error(f"Stereo fusion failed for chunk {idx}: {stderr}")
                 return {"status": "error", "message": f"Stereo fusion failed for chunk {idx}: {stderr}"}, 500
@@ -590,7 +592,7 @@ def process_video():
             '--output_path', poses_dir,
             '--output_type', 'TXT'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=60)
+        stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Model converter failed: {stderr}")
             return {"status": "error", "message": f"Model converter failed: {stderr}"}, 500
@@ -625,7 +627,7 @@ def process_video():
             '--output_path', output_sparse_ply,
             '--output_type', 'PLY'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=60)
+        stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Sparse point cloud export failed: {stderr}")
             return {"status": "error", "message": f"Sparse point cloud export failed: {stderr}"}, 500
