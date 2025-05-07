@@ -18,7 +18,7 @@ import numpy as np
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
-app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))  # Required for sessions
+app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -208,6 +208,9 @@ def process_video():
     images_dir = os.path.join(base_dir, 'images')
     os.makedirs(images_dir, exist_ok=True)
 
+    # Clean up old requests (excluding current request_id)
+    cleanup_old_requests(request_id)
+
     image_files = request.files.getlist('images')
     for image in image_files:
         ext = os.path.splitext(image.filename)[1]
@@ -230,21 +233,6 @@ def process_video():
     dense_base_dir = os.path.join(base_dir, 'dense_chunks')
     poses_dir = os.path.join(base_dir, 'poses')
     sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
-
-    if os.path.exists(base_dir):
-        for attempt in range(5):
-            try:
-                terminate_child_processes()
-                debug_file_locks(base_dir)
-                shutil.rmtree(base_dir)
-                logger.debug(f"Successfully removed {base_dir}")
-                break
-            except OSError as e:
-                logger.warning(f"Attempt {attempt+1} to remove {base_dir} failed: {e}")
-                time.sleep(3)
-        else:
-            logger.error(f"Failed to remove {base_dir} after retries")
-            return {"status": "error", "message": f"Cannot clean up previous run: {base_dir} is busy"}, 500
 
     try:
         os.makedirs(video_dir)
