@@ -13,6 +13,8 @@ const timerDisplay = document.getElementById('timer');
 async function processInput() {
     const videoFile = videoInput.files[0];
     const imageFiles = imagesInput.files;
+
+    // Validate inputs
     if (!videoFile && (!imageFiles || imageFiles.length === 0)) {
         message.textContent = 'Please select a video or a folder of images.';
         return;
@@ -41,8 +43,13 @@ async function processInput() {
         if (videoFile) {
             formData.append('video', videoFile);
         } else {
-            for (let i = 0; i < imageFiles.length; i++) {
-                formData.append('images', imageFiles[i]);
+            // Sort image files numerically by filename
+            const sortedImageFiles = Array.from(imageFiles).sort((a, b) => 
+                a.name.localeCompare(b.name, undefined, { numeric: true })
+            );
+            // Append images with consistent naming
+            for (let i = 0; i < sortedImageFiles.length; i++) {
+                formData.append('images', sortedImageFiles[i], `frame_${i.toString().padStart(4, '0')}.jpg`);
             }
         }
 

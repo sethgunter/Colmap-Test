@@ -326,6 +326,8 @@ def process_video():
             '--SiftExtraction.max_num_orientations', '3'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate(timeout=600)
+        logger.debug(f"Feature extraction stdout: {stdout}")
+        logger.error(f"Feature extraction stderr: {stderr}")
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
             return {"status": "error", "message": f"Feature extraction failed: {stderr}"}, 500
