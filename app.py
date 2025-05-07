@@ -235,10 +235,10 @@ def process_video():
     sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
 
     try:
-        os.makedirs(video_dir)
-        os.makedirs(images_dir)
-        os.makedirs(sparse_dir)
-        os.makedirs(dense_base_dir)
+        os.makedirs(video_dir, exist_ok=True)
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(sparse_dir, exist_ok=True)
+        os.makedirs(dense_base_dir, exist_ok=True)
         os.makedirs(poses_dir, exist_ok=True)
         os.makedirs(sparse_cubic_dir, exist_ok=True)
     except OSError as e:
