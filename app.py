@@ -17,7 +17,7 @@ import pycolmap
 import numpy as np
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
-app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
