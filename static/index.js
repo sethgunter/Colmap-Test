@@ -9,6 +9,7 @@ const container = document.getElementById('container');
 const progressBar = document.getElementById('progressBar');
 const progressContainer = document.getElementById('progressContainer');
 const timerDisplay = document.getElementById('timer');
+
 async function processInput() {
     const videoFile = videoInput.files[0];
     const imageFiles = imagesInput.files;
@@ -37,54 +38,71 @@ async function processInput() {
 
     // Preload audio to unlock context
     const alarm = new Audio('/static/alarm.mp3');
-    alarm.muted = true; // Mute initially to avoid silent playback
+    alarm.muted = true;
     alarm.play().then(() => {
-        alarm.pause(); // Pause immediately after starting
-        alarm.muted = false; // Unmute for later use
-        alarm.currentTime = 0; // Reset to start
+        alarm.pause();
+        alarm.muted = false;
+        alarm.currentTime = 0;
         console.log('Audio context unlocked');
     }).catch(error => {
         console.warn('Failed to unlock audio context:', error);
     });
 
     let timerInterval = null;
+    let sessionId = null;
 
     try {
-        const formData = new FormData();
+        let result = null;
         if (videoFile) {
+            const formData = new FormData();
             formData.append('video', videoFile);
+            result = await uploadData(formData, 1, 1);
         } else {
             const sortedImageFiles = Array.from(imageFiles).sort((a, b) =>
                 a.name.localeCompare(b.name, undefined, { numeric: true })
             );
-            for (let i = 0; i < sortedImageFiles.length; i++) {
-                formData.append('images', sortedImageFiles[i], `frame_${i.toString().padStart(4, '0')}.jpg`);
+            const chunkSize = 100;
+            for (let i = 0; i < sortedImageFiles.length; i += chunkSize) {
+                const chunk = sortedImageFiles.slice(i, i + chunkSize);
+                const formData = new FormData();
+                formData.append('session_id', sessionId || '');
+                chunk.forEach((file, index) => {
+                    formData.append('images', file, `frame_${(i + index).toString().padStart(4, '0')}.jpg`);
+                });
+                if (i + chunkSize >= sortedImageFiles.length) {
+                    formData.append('complete', 'true');
+                }
+                message.textContent = `Uploading images ${i + 1} to ${Math.min(i + chunkSize, sortedImageFiles.length)}...`;
+                const chunkResult = await uploadData(formData, sortedImageFiles.length, i + chunkSize);
+                sessionId = chunkResult.session_id || sessionId;
+                result = chunkResult.status === 'success' ? chunkResult : result;
             }
         }
 
-        const xhr = new XMLHttpRequest();
-        xhr.upload.addEventListener('progress', (e) => {
-            if (e.lengthComputable) {
-                const percent = (e.loaded / e.total) * 100;
-                progressBar.style.width = `${percent}%`;
-                message.textContent = `Uploading: ${Math.round(percent)}%`;
-            }
-        });
-
-        xhr.open('POST', '/process-video');
-        xhr.responseType = 'json';
-        xhr.send(formData);
-
-        const result = await new Promise((resolve, reject) => {
-            xhr.onload = () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(xhr.response);
-                } else {
-                    reject(new Error(`Server responded with status ${xhr.status}: ${xhr.response?.message || xhr.statusText}`));
+        async function uploadData(formData, totalFiles, uploadedFiles) {
+            const xhr = new XMLHttpRequest();
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = (e.loaded / e.total) * 100 * (uploadedFiles / totalFiles);
+                    progressBar.style.width = `${percent}%`;
+                    message.textContent = `Uploading: ${Math.round(percent)}%`;
                 }
-            };
-            xhr.onerror = () => reject(new Error('Network error during upload'));
-        });
+            });
+
+            xhr.open('POST', '/process-video');
+            xhr.responseType = 'json';
+            return new Promise((resolve, reject) => {
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        resolve(xhr.response);
+                    } else {
+                        reject(new Error(`Server responded with status ${xhr.status}: ${xhr.response?.message || xhr.statusText}`));
+                    }
+                };
+                xhr.onerror = () => reject(new Error('Network error during upload'));
+                xhr.send(formData);
+            });
+        }
 
         if (!result || result.status !== 'success') {
             throw new Error(result?.message || 'Server error');
@@ -109,7 +127,6 @@ async function processInput() {
         alarm.play().catch(error => {
             console.error('Failed to play alarm:', error);
             message.textContent = 'Processing complete. Click to play notification sound.';
-            // Add a button to retry audio playback
             const playButton = document.createElement('button');
             playButton.textContent = 'Play Sound';
             playButton.onclick = () => {
@@ -167,6 +184,7 @@ async function processInput() {
         progressContainer.style.display = 'none';
     }
 }
+
 function initThreeJS(plyPath, posesPath) {
     console.log(`Initializing Three.js with PLY: ${plyPath}, Poses: ${posesPath}`);
     try {

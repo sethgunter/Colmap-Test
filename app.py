@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, Response
+from flask import Flask, request, send_file, Response, session
 import subprocess
 import os
 import shutil
@@ -18,6 +18,7 @@ import numpy as np
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
+app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))  # Required for sessions
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -196,10 +197,34 @@ def merge_ply_files(ply_files, output_path):
 def process_video():
     logger.debug("Received POST request to /process-video")
     logger.debug(f"Request files: {list(request.files.keys())}")
-    request_id = str(uuid.uuid4())
+
+    # Handle chunked uploads
+    session_id = request.form.get('session_id', str(uuid.uuid4()))
+    request_id = session.get(f'request_id_{session_id}', str(uuid.uuid4()))
+    session[f'request_id_{session_id}'] = request_id
+
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
+    os.makedirs(images_dir, exist_ok=True)
+
+    image_files = request.files.getlist('images')
+    for image in image_files:
+        ext = os.path.splitext(image.filename)[1]
+        current_count = len(glob.glob(os.path.join(images_dir, '*')))
+        image_path = os.path.join(images_dir, f"frame_{current_count:04d}{ext}")
+        image.save(image_path)
+    
+    logger.debug(f"Saved {len(image_files)} images for session {session_id}")
+
+    if request.form.get('complete') != 'true':
+        return {
+            'status': 'partial',
+            'message': 'Images received, send next chunk or mark complete',
+            'session_id': session_id
+        }, 200
+
+    # Original processing logic
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
     dense_base_dir = os.path.join(base_dir, 'dense_chunks')
@@ -233,7 +258,7 @@ def process_video():
         return {"status": "error", "message": f"Failed to create directories: {e}"}, 500
 
     is_video = 'video' in request.files and request.files['video'].filename != ''
-    is_images = 'images' in request.files
+    is_images = os.path.exists(images_dir) and len(glob.glob(os.path.join(images_dir, '*'))) > 0
 
     if not is_video and not is_images:
         logger.error("No video or images provided in request")
@@ -254,20 +279,8 @@ def process_video():
             logger.error(f"Failed to save video: {str(e)}")
             return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
     else:
-        image_files = request.files.getlist('images')
-        if not image_files or all(f.filename == '' for f in image_files):
-            logger.error("No valid image files provided")
-            return {"status": "error", "message": "No valid image files provided"}, 400
-        logger.debug(f"Saving {len(image_files)} images")
-        try:
-            for i, image in enumerate(image_files):
-                ext = os.path.splitext(image.filename)[1]
-                image_path = os.path.join(images_dir, f"frame_{i:04d}{ext}")
-                image.save(image_path)
-            logger.debug(f"Images saved at timestamp: {input_save_time}")
-        except Exception as e:
-            logger.error(f"Failed to save images: {str(e)}")
-            return {"status": "error", "message": f"Failed to save images: {str(e)}"}, 500
+        logger.debug(f"Images already saved: {len(glob.glob(os.path.join(images_dir, '*')))} images")
+        logger.debug(f"Images saved at timestamp: {input_save_time}")
 
     resource_ok, resource_message = check_resources(request_id)
     if not resource_ok:
@@ -302,7 +315,6 @@ def process_video():
             logger.error(f"Database creation failed: {stderr}")
             return {"status": "error", "message": f"Database creation failed: {stderr}"}, 500
         logger.debug(f"Database creation output: {stdout}")
-        # Log all image filenames in images_dir after database creation, in order saved
         image_files = glob.glob(os.path.join(images_dir, '*'))
         logger.debug(f"Images in {images_dir} ({len(image_files)}): {[os.path.basename(f) for f in image_files]}")
     except subprocess.TimeoutExpired:
@@ -327,8 +339,6 @@ def process_video():
             '--SiftExtraction.max_num_orientations', '3'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
-        logger.debug(f"Feature extraction stdout: {stdout}")
-        
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
             return {"status": "error", "message": f"Feature extraction failed: {stderr}"}, 500
@@ -357,7 +367,6 @@ def process_video():
             '--SiftMatching.min_num_inliers', '30'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
-        logger.debug(f"Feature matching stdout: {stdout}")
         if process.returncode != 0:
             logger.error(f"Feature matching failed: {stderr}")
             return {"status": "error", "message": f"Feature matching failed: {stderr}"}, 500
@@ -383,7 +392,6 @@ def process_video():
             '--Mapper.sphere_camera', '1'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
-        logger.debug(f"sparse reconstruction stdout: {stdout}")
         if process.returncode != 0:
             logger.error(f"Sparse reconstruction failed: {stderr}")
             return {"status": "error", "message": f"Sparse reconstruction failed: {stderr}"}, 500
