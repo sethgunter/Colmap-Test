@@ -9,7 +9,6 @@ const container = document.getElementById('container');
 const progressBar = document.getElementById('progressBar');
 const progressContainer = document.getElementById('progressContainer');
 const timerDisplay = document.getElementById('timer');
-
 async function processInput() {
     const videoFile = videoInput.files[0];
     const imageFiles = imagesInput.files;
@@ -36,6 +35,18 @@ async function processInput() {
     message.textContent = videoFile ? 'Uploading video...' : 'Uploading images...';
     timerDisplay.textContent = 'Processing time: 00:00';
 
+    // Preload audio to unlock context
+    const alarm = new Audio('/static/alarm.mp3');
+    alarm.muted = true; // Mute initially to avoid silent playback
+    alarm.play().then(() => {
+        alarm.pause(); // Pause immediately after starting
+        alarm.muted = false; // Unmute for later use
+        alarm.currentTime = 0; // Reset to start
+        console.log('Audio context unlocked');
+    }).catch(error => {
+        console.warn('Failed to unlock audio context:', error);
+    });
+
     let timerInterval = null;
 
     try {
@@ -43,11 +54,9 @@ async function processInput() {
         if (videoFile) {
             formData.append('video', videoFile);
         } else {
-            // Sort image files numerically by filename
             const sortedImageFiles = Array.from(imageFiles).sort((a, b) =>
                 a.name.localeCompare(b.name, undefined, { numeric: true })
             );
-            // Append images with consistent naming
             for (let i = 0; i < sortedImageFiles.length; i++) {
                 formData.append('images', sortedImageFiles[i], `frame_${i.toString().padStart(4, '0')}.jpg`);
             }
@@ -82,7 +91,7 @@ async function processInput() {
         }
 
         console.log('Server response received, starting timer');
-        const inputSaveTime = result.input_save_time * 1000; // Convert to milliseconds
+        const inputSaveTime = result.input_save_time * 1000;
         if (!inputSaveTime) {
             console.error('Input save time not provided by server');
             throw new Error('Server did not provide input save time');
@@ -97,10 +106,17 @@ async function processInput() {
         }, 1000);
 
         // Play alarm sound on success
-        const alarm = new Audio('/static/alarm.mp3');
         alarm.play().catch(error => {
             console.error('Failed to play alarm:', error);
-            message.textContent = 'Processing complete, but alarm playback failed';
+            message.textContent = 'Processing complete. Click to play notification sound.';
+            // Add a button to retry audio playback
+            const playButton = document.createElement('button');
+            playButton.textContent = 'Play Sound';
+            playButton.onclick = () => {
+                alarm.play().catch(err => console.error('Retry failed:', err));
+                playButton.remove();
+            };
+            message.appendChild(playButton);
         });
 
         message.textContent = 'Processing complete';
