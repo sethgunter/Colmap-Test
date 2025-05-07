@@ -47,11 +47,13 @@ RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy
 # Copy SphereSfM/COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
 
+
 # Copy application code
 WORKDIR /app
 COPY app.py .
 COPY static/ static/
 COPY vocab_tree.bin /app/vocab_tree.bin
+COPY static/alarm.mp3 /app/static/alarm.mp3
 RUN chmod 644 /app/vocab_tree.bin
 
 # Verify static files

@@ -44,7 +44,7 @@ async function processInput() {
             formData.append('video', videoFile);
         } else {
             // Sort image files numerically by filename
-            const sortedImageFiles = Array.from(imageFiles).sort((a, b) => 
+            const sortedImageFiles = Array.from(imageFiles).sort((a, b) =>
                 a.name.localeCompare(b.name, undefined, { numeric: true })
             );
             // Append images with consistent naming
@@ -96,6 +96,13 @@ async function processInput() {
             timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
         }, 1000);
 
+        // Play alarm sound on success
+        const alarm = new Audio('/static/alarm.mp3');
+        alarm.play().catch(error => {
+            console.error('Failed to play alarm:', error);
+            message.textContent = 'Processing complete, but alarm playback failed';
+        });
+
         message.textContent = 'Processing complete';
         progressBar.style.width = '100%';
         viewDenseButton.style.display = 'block';
@@ -144,7 +151,6 @@ async function processInput() {
         progressContainer.style.display = 'none';
     }
 }
-
 function initThreeJS(plyPath, posesPath) {
     console.log(`Initializing Three.js with PLY: ${plyPath}, Poses: ${posesPath}`);
     try {
