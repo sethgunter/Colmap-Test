@@ -211,21 +211,38 @@ def process_video():
     # Clean up old requests (excluding current request_id)
     cleanup_old_requests(request_id)
 
+    # Check if video or images
+    is_video = 'video' in request.files and request.files['video'].filename != ''
     image_files = request.files.getlist('images')
-    for image in image_files:
-        ext = os.path.splitext(image.filename)[1]
-        current_count = len(glob.glob(os.path.join(images_dir, '*')))
-        image_path = os.path.join(images_dir, f"frame_{current_count:04d}{ext}")
-        image.save(image_path)
-    
-    logger.debug(f"Saved {len(image_files)} images for session {session_id}")
 
-    if request.form.get('complete') != 'true':
-        return {
-            'status': 'partial',
-            'message': 'Images received, send next chunk or mark complete',
-            'session_id': session_id
-        }, 200
+    if is_video:
+        # Video upload: process immediately
+        video = request.files['video']
+        video_path = os.path.join(video_dir, video.filename)
+        logger.debug(f"Saving video: {video_path}")
+        try:
+            os.makedirs(video_dir, exist_ok=True)
+            video.save(video_path)
+            logger.debug(f"Video saved at timestamp: {time.time()}")
+        except Exception as e:
+            logger.error(f"Failed to save video: {str(e)}")
+            return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
+    else:
+        # Image upload: handle chunking
+        for image in image_files:
+            ext = os.path.splitext(image.filename)[1]
+            current_count = len(glob.glob(os.path.join(images_dir, '*')))
+            image_path = os.path.join(images_dir, f"frame_{current_count:04d}{ext}")
+            image.save(image_path)
+        
+        logger.debug(f"Saved {len(image_files)} images for session {session_id}")
+        
+        if request.form.get('complete') != 'true':
+            return {
+                'status': 'partial',
+                'message': 'Images received, send next chunk or mark complete',
+                'session_id': session_id
+            }, 200
 
     # Original processing logic
     database_path = os.path.join(base_dir, 'database.db')
