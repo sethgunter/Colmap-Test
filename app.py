@@ -548,8 +548,9 @@ def process_video():
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate()
             if process.returncode != 0:
-                logger.error(f"Patch match failed for chunk {idx}: {stderr}")
+                logger.error(f"Patch match failed for chunk {idx}: {stderr} {stdout}")
                 return {"status": "error", "message": f"Patch match failed for chunk {idx}: {stderr}"}, 500
+            logger.debug(f"stdout content: {repr(stdout)}")
         except subprocess.TimeoutExpired:
             logger.error(f"Patch match timed out for chunk {idx}")
             return {"status": "error", "message": f"Patch match timed out for chunk {idx}"}, 500
@@ -593,7 +594,7 @@ def process_video():
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)  # Line buffering
             stdout, stderr = process.communicate()
             if process.returncode != 0:
-                logger.error(f"Stereo fusion failed for chunk {idx}: {stderr}")
+                logger.error(f"Stereo fusion failed for chunk {idx}: {stderr} {stdout}")
                 logger.debug(f"Raw stderr content: {repr(stderr)}")  # Log raw stderr for inspection
                 if not stderr:
                     logger.error(f"No stderr output from stereo fusion for chunk {idx}")
