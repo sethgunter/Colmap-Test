@@ -56,6 +56,7 @@ async function processInput() {
         if (videoFile) {
             const formData = new FormData();
             formData.append('video', videoFile);
+            formData.append('complete', 'true');
             result = await uploadData(formData, 1, 1);
         } else {
             const sortedImageFiles = Array.from(imageFiles).sort((a, b) =>
