@@ -344,10 +344,10 @@ def process_video():
             '--ImageReader.single_camera', '1',
             '--SiftExtraction.use_gpu', '1',
             '--SiftExtraction.gpu_index', '0',
-            '--SiftExtraction.peak_threshold', '0.0001',
-            '--SiftExtraction.max_num_features', '11000',
+            '--SiftExtraction.peak_threshold', '0.006',
+            '--SiftExtraction.max_num_features', '8000',
             '--SiftExtraction.estimate_affine_shape', '1',
-            '--SiftExtraction.max_num_orientations', '3'
+            '--SiftExtraction.max_num_orientations', '2'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
@@ -363,19 +363,19 @@ def process_video():
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'sequential_matcher',
             '--database_path', database_path,
-            '--SequentialMatching.overlap', '5',
+            '--SequentialMatching.overlap', '7',
             '--SequentialMatching.quadratic_overlap', '0',
             '--SequentialMatching.loop_detection', '1',
             '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
-            '--SequentialMatching.loop_detection_period', '20',
-            '--SequentialMatching.loop_detection_num_images', '50',
+            '--SequentialMatching.loop_detection_period', '30',
+            '--SequentialMatching.loop_detection_num_images', '30',
             '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
             '--SequentialMatching.loop_detection_num_checks', '256',
             '--SequentialMatching.loop_detection_num_images_after_verification', '0',
-            '--SequentialMatching.loop_detection_max_num_features', '-1',
+            '--SequentialMatching.loop_detection_max_num_features', '4000',
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
-            '--SiftMatching.min_num_inliers', '30'
+            '--SiftMatching.min_num_inliers', '15'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
@@ -394,8 +394,8 @@ def process_video():
             '--image_path', images_dir,
             '--output_path', sparse_dir,
             '--Mapper.min_num_matches', '10',
-            '--Mapper.init_min_num_inliers', '30',
-            '--Mapper.ba_global_max_num_iterations', '50',
+            '--Mapper.init_min_num_inliers', '15',
+            '--Mapper.ba_global_max_num_iterations', '30',
             '--Mapper.multiple_models', '1',
             '--Mapper.ba_refine_focal_length', '0',
             '--Mapper.ba_refine_principal_point', '0',
@@ -540,17 +540,17 @@ def process_video():
                 '--workspace_path', chunk_dir,
                 '--workspace_format', 'COLMAP',
                 '--PatchMatchStereo.gpu_index', '0',
-                '--PatchMatchStereo.max_image_size', '600',
-                '--PatchMatchStereo.window_radius', '4',
-                '--PatchMatchStereo.num_samples', '4',
-                '--PatchMatchStereo.num_iterations', '4',
-                '--PatchMatchStereo.cache_size', '8'
+                '--PatchMatchStereo.max_image_size', '400',
+                '--PatchMatchStereo.window_radius', '3',
+                '--PatchMatchStereo.num_samples', '3',
+                '--PatchMatchStereo.num_iterations', '3',
+                '--PatchMatchStereo.cache_size', '4'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate()
             if process.returncode != 0:
-                logger.error(f"Patch match failed for chunk {idx}: {stderr} {stdout}")
+                logger.error(f"Patch match failed for chunk {idx}: {stderr}")
                 return {"status": "error", "message": f"Patch match failed for chunk {idx}: {stderr}"}, 500
-            logger.debug(f"stdout content: {repr(stdout)}")
+            
         except subprocess.TimeoutExpired:
             logger.error(f"Patch match timed out for chunk {idx}")
             return {"status": "error", "message": f"Patch match timed out for chunk {idx}"}, 500
@@ -586,10 +586,10 @@ def process_video():
                 '--workspace_format', 'COLMAP',
                 '--input_type', 'photometric',
                 '--output_path', partial_ply,
-                '--StereoFusion.min_num_pixels', '3',
-                '--StereoFusion.check_num_images', '3',
-                '--StereoFusion.max_reproj_error', '3',
-                '--StereoFusion.max_depth_error', '0.5',
+                '--StereoFusion.min_num_pixels', '2',
+                '--StereoFusion.check_num_images', '2',
+                '--StereoFusion.max_reproj_error', '2',
+                '--StereoFusion.max_depth_error', '0.3',
                 '--StereoFusion.cache_size', str(cache_size)
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)  # Line buffering
             stdout, stderr = process.communicate()
