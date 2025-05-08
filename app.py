@@ -139,13 +139,13 @@ def check_resources(current_request_id):
         gpu = gpus[0]
         free_memory_mb = gpu.memoryFree
         logger.debug(f"GPU memory free: {free_memory_mb} MB")
-        if free_memory_mb < 3000:
+        if free_memory_mb < 10000:
             logger.error(f"Insufficient GPU memory: {free_memory_mb} MB available")
             return False, f"Insufficient GPU memory: {free_memory_mb} MB available"
 
         available_ram = psutil.virtual_memory().available / (1024 ** 2)
         logger.debug(f"Available RAM: {available_ram} MB")
-        if available_ram < 8192:
+        if available_ram < 20000:
             logger.error(f"Insufficient RAM: {available_ram} MB available")
             return False, f"Insufficient RAM: {available_ram} MB available"
 
@@ -164,7 +164,7 @@ def check_ram_for_fusion():
     else:
         logger.warning("No GPU detected before stereo fusion")
 
-    if available_ram < 8192:
+    if available_ram < 8000:
         logger.error(f"Insufficient RAM for stereo fusion: {available_ram} MB available")
         return False, f"Insufficient RAM for fusion: {available_ram} MB available"
     return True, available_ram
