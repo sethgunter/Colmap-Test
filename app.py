@@ -198,59 +198,27 @@ def process_video():
     logger.debug("Received POST request to /process-video")
     logger.debug(f"Request files: {list(request.files.keys())}")
 
-    # Handle chunked uploads
+    # Initialize session and request ID
     session_id = request.form.get('session_id', str(uuid.uuid4()))
     request_id = session.get(f'request_id_{session_id}', str(uuid.uuid4()))
     session[f'request_id_{session_id}'] = request_id
 
+    # Define directories
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
-    os.makedirs(images_dir, exist_ok=True)
-
-    # Clean up old requests (excluding current request_id)
-    cleanup_old_requests(request_id)
-
-    # Check if video or images
-    is_video = 'video' in request.files and request.files['video'].filename != ''
-    image_files = request.files.getlist('images')
-
-    if is_video:
-        # Video upload: process immediately
-        video = request.files['video']
-        video_path = os.path.join(video_dir, video.filename)
-        logger.debug(f"Saving video: {video_path}")
-        try:
-            os.makedirs(video_dir, exist_ok=True)
-            video.save(video_path)
-            logger.debug(f"Video saved at timestamp: {time.time()}")
-        except Exception as e:
-            logger.error(f"Failed to save video: {str(e)}")
-            return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
-    else:
-        # Image upload: handle chunking
-        for image in image_files:
-            ext = os.path.splitext(image.filename)[1]
-            current_count = len(glob.glob(os.path.join(images_dir, '*')))
-            image_path = os.path.join(images_dir, f"frame_{current_count:04d}{ext}")
-            image.save(image_path)
-        
-        logger.debug(f"Saved {len(image_files)} images for session {session_id}")
-        
-        if request.form.get('complete') != 'true':
-            return {
-                'status': 'partial',
-                'message': 'Images received, send next chunk or mark complete',
-                'session_id': session_id
-            }, 200
-
-    # Original processing logic
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
     dense_base_dir = os.path.join(base_dir, 'dense_chunks')
     poses_dir = os.path.join(base_dir, 'poses')
     sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
 
+    # Clean up old requests
+    if not cleanup_old_requests(request_id):
+        logger.error("Failed to clean up old request directories")
+        return {"status": "error", "message": "Failed to clean up old request directories"}, 500
+
+    # Create directories
     try:
         os.makedirs(video_dir, exist_ok=True)
         os.makedirs(images_dir, exist_ok=True)
@@ -262,52 +230,90 @@ def process_video():
         logger.error(f"Failed to create directories: {e}")
         return {"status": "error", "message": f"Failed to create directories: {e}"}, 500
 
+    # Check for video or images
     is_video = 'video' in request.files and request.files['video'].filename != ''
-    is_images = os.path.exists(images_dir) and len(glob.glob(os.path.join(images_dir, '*'))) > 0
+    image_files = request.files.getlist('images')
 
-    if not is_video and not is_images:
+    # Validate inputs
+    if not is_video and not image_files:
         logger.error("No video or images provided in request")
         return {"status": "error", "message": "No video or images provided"}, 400
-    if is_video and is_images:
+    if is_video and image_files:
         logger.error("Both video and images provided; please provide only one")
         return {"status": "error", "message": "Please provide either a video or images, not both"}, 400
 
     input_save_time = time.time()
     if is_video:
+        # Handle video upload
         video = request.files['video']
         video_path = os.path.join(video_dir, video.filename)
         logger.debug(f"Saving video: {video_path}")
         try:
-            video.save(video_path)
-            logger.debug(f"Video saved at timestamp: {input_save_time}")
+            # Save video with explicit file handling
+            with open(video_path, 'wb') as f:
+                f.write(video.read())
+            logger.debug(f"Video saved: {video_path}, size: {os.path.getsize(video_path)} bytes")
+            # Verify file integrity with ffprobe
+            process = subprocess.Popen(['ffprobe', video_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            _, ffprobe_stderr = process.communicate(timeout=30)
+            if process.returncode != 0:
+                logger.error(f"Invalid video file: {ffprobe_stderr}")
+                return {"status": "error", "message": f"Invalid video file: {ffprobe_stderr}"}, 400
         except Exception as e:
             logger.error(f"Failed to save video: {str(e)}")
             return {"status": "error", "message": f"Failed to save video: {str(e)}"}, 500
-    else:
-        logger.debug(f"Images already saved: {len(glob.glob(os.path.join(images_dir, '*')))} images")
-        logger.debug(f"Images saved at timestamp: {input_save_time}")
 
-    resource_ok, resource_message = check_resources(request_id)
-    if not resource_ok:
-        return {"status": "error", "message": resource_message}, 500
-
-    if is_video:
+        # Extract frames
         try:
             logger.debug("Extracting frames")
             process = subprocess.Popen([
-                'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1920:960',
+                'ffmpeg', '-i', video_path, '-r', '2', '-vf', 'scale=1920:960', '-y',
                 os.path.join(images_dir, 'frame_%04d.jpg')
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate()
+            stdout, stderr = process.communicate(timeout=300)
             if process.returncode != 0:
                 logger.error(f"Frame extraction failed: {stderr}")
                 return {"status": "error", "message": f"Frame extraction failed: {stderr}"}, 500
             logger.debug(f"Frame extraction output: {stdout}")
+            frame_count = len(glob.glob(os.path.join(images_dir, 'frame_*.jpg')))
+            logger.debug(f"Extracted {frame_count} frames")
+            if frame_count == 0:
+                logger.error("No frames extracted")
+                return {"status": "error", "message": "No frames extracted from video"}, 500
         except subprocess.TimeoutExpired:
             logger.error("Frame extraction timed out")
             terminate_child_processes()
             return {"status": "error", "message": "Frame extraction timed out"}, 500
+    else:
+        # Handle chunked image uploads
+        for image in image_files:
+            if image.filename == '':
+                continue
+            ext = os.path.splitext(image.filename)[1]
+            current_count = len(glob.glob(os.path.join(images_dir, '*')))
+            image_path = os.path.join(images_dir, f"frame_{current_count:04d}{ext}")
+            try:
+                image.save(image_path)
+                logger.debug(f"Saved image: {image_path}")
+            except Exception as e:
+                logger.error(f"Failed to save image {image.filename}: {str(e)}")
+                return {"status": "error", "message": f"Failed to save image: {str(e)}"}, 500
+        logger.debug(f"Saved {len(image_files)} images for session {session_id}")
 
+        if request.form.get('complete') != 'true':
+            return {
+                'status': 'partial',
+                'message': 'Images received, send next chunk or mark complete',
+                'session_id': session_id
+            }, 200
+
+    # Check resources
+    resource_ok, resource_message = check_resources(request_id)
+    if not resource_ok:
+        logger.error(f"Resource check failed: {resource_message}")
+        return {"status": "error", "message": resource_message}, 500
+
+    # Create database
     try:
         logger.debug("Creating database")
         process = subprocess.Popen([
@@ -315,7 +321,7 @@ def process_video():
             'colmap', 'database_creator',
             '--database_path', database_path
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=60)
         if process.returncode != 0:
             logger.error(f"Database creation failed: {stderr}")
             return {"status": "error", "message": f"Database creation failed: {stderr}"}, 500
