@@ -438,12 +438,12 @@ def process_video():
             '--SiftExtraction.max_num_features', '12000',
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
-            '--SiftExtraction.upright', '0'
+            
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
-            response = {"status": "error", "message": f"Feature extraction failed: {stderr}", "session_id": session_id}
+            response = {"status": "error", "message": f"Feature extraction failed: {stderr} {stdout}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
     except subprocess.TimeoutExpired:
