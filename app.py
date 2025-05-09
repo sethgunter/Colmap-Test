@@ -15,9 +15,6 @@ import glob
 import plyfile
 import pycolmap
 import numpy as np
-from scipy.spatial import KDTree  # Added for loop closure detection
-import cv2  # Added for feature matching
-import sqlite3  # Added for database updates
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
@@ -184,15 +181,15 @@ def merge_ply_files(ply_files, output_path):
         colors = np.array([(v['red'], v['green'], v['blue']) for v in vertices], dtype=np.uint8)
         all_vertices.append(coords)
         all_colors.append(colors)
-    
+
     merged_vertices = np.concatenate(all_vertices)
     merged_colors = np.concatenate(all_colors)
-    
+
     vertex_data = np.array(
         [(v[0], v[1], v[2], c[0], c[1], c[2]) for v, c in zip(merged_vertices, merged_colors)],
         dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     )
-    
+
     vertex_element = plyfile.PlyElement.describe(vertex_data, 'vertex')
     plyfile.PlyData([vertex_element]).write(output_path)
     logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
@@ -437,10 +434,14 @@ def process_video():
             '--ImageReader.single_camera', '1',
             '--SiftExtraction.use_gpu', '1',
             '--SiftExtraction.gpu_index', '0',
+            '--SiftExtraction.peak_threshold', '0.004',
+            '--SiftExtraction.max_num_features', '15000',
             '--SiftExtraction.peak_threshold', '0.0001',
             '--SiftExtraction.max_num_features', '13000',
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
+
+
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
@@ -460,12 +461,26 @@ def process_video():
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'sequential_matcher',
             '--database_path', database_path,
+            '--SequentialMatching.overlap', '7',
             '--SequentialMatching.overlap', '5',
             '--SequentialMatching.quadratic_overlap', '0',
-            '--SequentialMatching.loop_detection', '0',  # Disable vocab tree for raw poses
+            '--SequentialMatching.loop_detection', '1',
+            '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
+            '--SequentialMatching.loop_detection_period', '30',
+            '--SequentialMatching.loop_detection_num_images', '30',
+            '--SequentialMatching.loop_detection_period', '20',
+            '--SequentialMatching.loop_detection_num_images', '50',
+            '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
+            '--SequentialMatching.loop_detection_num_checks', '256',
+            '--SequentialMatching.loop_detection_num_images_after_verification', '6',
+            '--SequentialMatching.loop_detection_max_num_features', '6000',
+            '--SequentialMatching.loop_detection_num_images_after_verification', '0',
+            '--SequentialMatching.loop_detection_max_num_features', '-1',
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '15'
+            #'--SiftMatching.guided_matching', '1'
+
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
@@ -480,7 +495,7 @@ def process_video():
         return response, 500
 
     try:
-        logger.debug("Running initial sparse reconstruction")
+        logger.debug("Running sparse reconstruction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'mapper',
@@ -488,205 +503,36 @@ def process_video():
             '--image_path', images_dir,
             '--output_path', sparse_dir,
             '--Mapper.min_num_matches', '10',
+            '--Mapper.init_min_num_inliers', '15',
+            '--Mapper.ba_global_max_num_iterations', '30',
             '--Mapper.init_min_num_inliers', '30',
             '--Mapper.ba_global_max_num_iterations', '50',
-            '--Mapper.multiple_models', '0',
+            '--Mapper.multiple_models', '1',
             '--Mapper.ba_refine_focal_length', '0',
             '--Mapper.ba_refine_principal_point', '0',
             '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1',
-            '--Mapper.ba_local_max_num_iterations', '100'
+            '--Mapper.ba_local_max_num_iterations', '100' # Increase local BA iterations
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
-            logger.error(f"Initial sparse reconstruction failed: {stderr}")
-            response = {"status": "error", "message": f"Initial sparse reconstruction failed: {stderr} {stdout}", "session_id": session_id}
+            logger.error(f"Sparse reconstruction failed: {stderr}")
+            response = {"status": "error", "message": f"Sparse reconstruction failed: {stderr} {stdout}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
     except subprocess.TimeoutExpired:
-        logger.error("Initial sparse reconstruction timed out")
-        response = {"status": "error", "message": "Initial sparse reconstruction timed out", "session_id": session_id}
+        logger.error("Sparse reconstruction timed out")
+        response = {"status": "error", "message": "Sparse reconstruction timed out", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
     sparse_model_dir = os.path.join(sparse_dir, '0')
     if not os.path.exists(sparse_model_dir):
         logger.error("Sparse model not found")
-        response = {"status": "error", "message": "Initial sparse reconstruction failed: no model generated", "session_id": session_id}
+        response = {"status": "error", "message": "Sparse reconstruction failed: no model generated", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-        # --- Start of Loop Closure Detection (Using pycolmap) ---
-    try:
-        logger.debug("Running distance-based loop closure detection")
-        # Load reconstruction
-        reconstruction = pycolmap.Reconstruction(sparse_model_dir)
-
-        # Extract poses
-        poses = []
-        image_ids = []
-        image_names = []
-        translations = []
-        for image_id, image in reconstruction.images.items():
-            if not image.has_pose:
-                logger.warning(f"Image {image.name} has no pose, skipping")
-                continue
-            t = image.projection_center()
-            pose = image.cam_from_world
-            R = pose.rotation.matrix()
-            poses.append((t, R))
-            translations.append(t)
-            image_ids.append(image_id)
-            image_names.append(image.name)
-
-        translations = np.array(translations)
-        logger.info(f"Extracted {len(translations)} valid poses")
-        if len(translations) == 0:
-            logger.warning("No valid poses found, skipping loop closure detection")
-            raise Exception("No valid poses found")
-
-        # Build KD-tree for proximity search
-        kdtree = KDTree(translations)
-        distance_threshold = 1.0  # Set to 1.0 meter for more candidates
-        temporal_threshold = 10
-        sequence_window = 5  # Check ±5 frames in sequence
-
-        # Find candidate pairs and include nearby frames
-        candidate_pairs = []
-        for i, t in enumerate(translations):
-            indices = kdtree.query_ball_point(t, distance_threshold)
-            for j in indices:
-                if i < j and abs(image_ids[i] - image_ids[j]) >= temporal_threshold:
-                    # Add primary pair
-                    candidate_pairs.append((image_ids[i], image_ids[j], image_names[i], image_names[j]))
-                    # Add nearby frames in sequence for j
-                    frame_j_idx = int(image_names[j].split('_')[1].split('.')[0])
-                    for offset in range(-sequence_window, sequence_window + 1):
-                        if offset == 0:
-                            continue
-                        nearby_idx = frame_j_idx + offset
-                        nearby_name = f"frame_{nearby_idx:04d}.jpg"
-                        if nearby_name in image_names:
-                            nearby_id = image_ids[image_names.index(nearby_name)]
-                            if abs(image_ids[i] - nearby_id) >= temporal_threshold:
-                                candidate_pairs.append((image_ids[i], nearby_id, image_names[i], nearby_name))
-
-        logger.info(f"Found {len(candidate_pairs)} candidate pairs")
-
-        # Geometric verification
-        loop_closures = []
-        min_inliers = 30  # Reduced to 20 for more matches
-        max_reproj_error = 7.0  # Increased to 5.0 pixels for flexibility
-        for img_id1, img_id2, img_name1, img_name2 in candidate_pairs:
-            img1_path = os.path.join(images_dir, img_name1)
-            img2_path = os.path.join(images_dir, img_name2)
-            img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
-            img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
-            if img1 is None or img2 is None:
-                logger.warning(f"Failed to load images: {img_name1}, {img_name2}")
-                continue
-
-            sift = cv2.SIFT_create(nfeatures=20000, contrastThreshold=0.00005)  # Increased features, relaxed threshold
-            kp1, desc1 = sift.detectAndCompute(img1, None)
-            kp2, desc2 = sift.detectAndCompute(img2, None)
-            if desc1 is None or desc2 is None:
-                logger.warning(f"No features detected for pair: {img_name1}, {img_name2}")
-                continue
-
-            matcher = cv2.BFMatcher(cv2.NORM_L2)
-            matches = matcher.knnMatch(desc1, desc2, k=2)
-            good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]  # Ratio test with 0.75
-            if len(good_matches) < min_inliers:
-                logger.debug(f"Insufficient matches ({len(good_matches)}) for pair: {img_name1}, {img_name2}")
-                continue
-
-            pts1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
-            pts2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
-            F, inliers = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC, ransacReprojThreshold=1.5)
-            inlier_count = np.sum(inliers) if inliers is not None else 0
-            if inlier_count < min_inliers:
-                logger.debug(f"Insufficient inliers ({inlier_count}) for pair: {img_name1}, {img_name2}")
-                continue
-
-            idx1 = image_names.index(img_name1)
-            idx2 = image_names.index(img_name2)
-            P1 = np.hstack((poses[idx1][1], poses[idx1][0].reshape(-1, 1)))
-            P2 = np.hstack((poses[idx2][1], poses[idx2][0].reshape(-1, 1)))
-            points4d = cv2.triangulatePoints(P1, P2, pts1[inliers.ravel() > 0].T, pts2[inliers.ravel() > 0].T)
-            points3d = points4d[:3] / points4d[3]
-
-            reproj_error = 0
-            for k in range(points3d.shape[1]):
-                pt3d = points3d[:, k]
-                proj1 = P1 @ np.append(pt3d, 1)
-                proj2 = P2 @ np.append(pt3d, 1)
-                reproj_error += np.linalg.norm(proj1[:2] / proj1[2] - pts1[inliers.ravel() > 0][k]) ** 2
-                reproj_error += np.linalg.norm(proj2[:2] / proj2[2] - pts2[inliers.ravel() > 0][k]) ** 2
-            reproj_error = np.sqrt(reproj_error / (2 * points3d.shape[1]))
-
-            if reproj_error > max_reproj_error:
-                logger.debug(f"High reprojection error ({reproj_error}) for pair: {img_name1}, {img_name2}")
-                continue
-
-            loop_closures.append((img_id1, img_id2, good_matches, inliers))
-            logger.debug(f"Valid loop closure found: {img_name1}, {img_name2} with {inlier_count} inliers, reproj error {reproj_error}")
-
-        logger.info(f"Found {len(loop_closures)} verified loop closures")
-        if loop_closures:
-            logger.debug("Updating database with loop closures")
-            conn = sqlite3.connect(database_path)
-            cursor = conn.cursor()
-            for img_id1, img_id2, matches, inliers in loop_closures:
-                cursor.execute("SELECT image_id, data FROM keypoints WHERE image_id IN (?, ?)", (img_id1, img_id2))
-                keypoints = {row[0]: np.frombuffer(row[1], dtype=np.float32).reshape(-1, 6) for row in cursor.fetchall()}
-                match_data = []
-                for i, m in enumerate(matches):
-                    if inliers[i]:
-                        match_data.append((m.queryIdx, m.trainIdx))
-                match_data = np.array(match_data, dtype=np.uint32)
-                cursor.execute("INSERT OR REPLACE INTO matches (pair_id, data) VALUES (?, ?)",
-                              ((min(img_id1, img_id2) << 32) | max(img_id1, img_id2), match_data.tobytes()))
-            conn.commit()
-            conn.close()
-
-            logger.debug("Running sparse reconstruction with loop closures")
-            process = subprocess.Popen([
-                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-                'colmap', 'mapper',
-                '--database_path', database_path,
-                '--image_path', images_dir,
-                '--output_path', sparse_dir,
-                '--Mapper.min_num_matches', '10',
-                '--Mapper.init_min_num_inliers', '30',
-                '--Mapper.ba_global_max_num_iterations', '50',
-                '--Mapper.multiple_models', '0',
-                '--Mapper.ba_refine_focal_length', '0',
-                '--Mapper.ba_refine_principal_point', '0',
-                '--Mapper.ba_refine_extra_params', '0',
-                '--Mapper.sphere_camera', '1',
-                '--Mapper.ba_local_max_num_iterations', '100'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                logger.error(f"Final sparse reconstruction failed: {stderr}")
-                response = {"status": "error", "message": f"Final sparse reconstruction failed: {stderr} {stdout}", "session_id": session_id}
-                logger.debug(f"Sending response: {response}")
-                return response, 500
-
-            sparse_model_dir = os.path.join(sparse_dir, '0')
-            if not os.path.exists(sparse_model_dir):
-                logger.error("Final sparse model not found")
-                response = {"status": "error", "message": "Final sparse reconstruction failed: no model generated", "session_id": session_id}
-                logger.debug(f"Sending response: {response}")
-                return response, 500
-        else:
-            logger.warning("No loop closures found, proceeding with initial reconstruction")
-    except Exception as e:
-        logger.error(f"Loop closure detection failed: {str(e)}")
-        response = {"status": "error", "message": f"Loop closure detection failed: {str(e)}", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
-    # --- End of Loop Closure Detection ---
     try:
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
@@ -836,25 +682,25 @@ def process_dense():
                 new_reconstruction = pycolmap.Reconstruction()
                 for cam_id, cam in reconstruction.cameras.items():
                     new_reconstruction.add_camera(cam)
-                
+
                 valid_image_ids = []
                 for img_id, img in reconstruction.images.items():
                     img_name = os.path.basename(img.name)
                     if img_name in chunk_image_names_set and reconstruction.is_image_registered(img_id):
                         new_reconstruction.add_image(img)
                         valid_image_ids.append(img_id)
-                
+
                 for point3d_id, point3d in reconstruction.points3D.items():
                     track = point3d.track
                     has_valid_ref = any(elem.image_id in valid_image_ids for elem in track.elements)
                     if has_valid_ref:
                         new_reconstruction.add_point3D(point3d.xyz, point3d.track, point3d.color)
-                
+
                 new_reconstruction.write(chunk_sparse_dir)
                 reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
                 filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                     for img_id, img in reconstruction.images.items()]
-                
+
                 if len(reconstruction.images) != len(chunk_image_names):
                     logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
                     response = {"status": "error", "message": f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}", "session_id": session_id}
