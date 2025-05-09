@@ -271,6 +271,7 @@ def process_video():
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
+    masks_dir = os.path.join(base_dir, 'masks')  # New directory for masks
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
     poses_dir = os.path.join(base_dir, 'poses')
@@ -287,6 +288,7 @@ def process_video():
     try:
         os.makedirs(video_dir, exist_ok=True)
         os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(masks_dir, exist_ok=True)  # Create masks directory
         os.makedirs(sparse_dir, exist_ok=True)
         os.makedirs(poses_dir, exist_ok=True)
         os.makedirs(sparse_cubic_dir, exist_ok=True)
@@ -296,9 +298,10 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Check for video or images
+    # Check for video, images, or masks
     is_video = 'video' in request.files and request.files['video'].filename != ''
     image_files = request.files.getlist('images')
+    mask_files = request.files.getlist('masks')  # New: Get mask files
 
     # Validate inputs
     if not is_video and not image_files:
@@ -306,9 +309,14 @@ def process_video():
         response = {"status": "error", "message": "No video or images provided", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 400
-    if is_video and image_files:
-        logger.error("Both video and images provided; please provide only one")
-        response = {"status": "error", "message": "Please provide either a video or images, not both", "session_id": session_id}
+    if is_video and (image_files or mask_files):
+        logger.error("Video provided with images or masks; please provide only a video or images/masks")
+        response = {"status": "error", "message": "Please provide either a video or images/masks, not both", "session_id": session_id}
+        logger.debug(f"Sending response: {response}")
+        return response, 400
+    if mask_files and not image_files:
+        logger.error("Masks provided without images")
+        response = {"status": "error", "message": "Masks provided without corresponding images", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 400
 
@@ -365,7 +373,7 @@ def process_video():
             logger.debug(f"Sending response: {response}")
             return response, 500
     else:
-        # Handle chunked image uploads
+        # Handle chunked image and mask uploads
         for image in image_files:
             if image.filename == '':
                 continue
@@ -380,12 +388,29 @@ def process_video():
                 response = {"status": "error", "message": f"Failed to save image: {str(e)}", "session_id": session_id}
                 logger.debug(f"Sending response: {response}")
                 return response, 500
-        logger.debug(f"Saved {len(image_files)} images for session {session_id}")
+
+        # Handle mask files
+        for mask in mask_files:
+            if mask.filename == '':
+                continue
+            ext = os.path.splitext(mask.filename)[1]
+            current_count = len(glob.glob(os.path.join(masks_dir, '*')))
+            mask_path = os.path.join(masks_dir, f"frame_{current_count:04d}{ext}")
+            try:
+                mask.save(mask_path)
+                logger.debug(f"Saved mask: {mask_path}")
+            except Exception as e:
+                logger.error(f"Failed to save mask {mask.filename}: {str(e)}")
+                response = {"status": "error", "message": f"Failed to save mask: {str(e)}", "session_id": session_id}
+                logger.debug(f"Sending response: {response}")
+                return response, 500
+
+        logger.debug(f"Saved {len(image_files)} images and {len(mask_files)} masks for session {session_id}")
 
         if request.form.get('complete') != 'true':
             response = {
                 'status': 'partial',
-                'message': 'Images received, send next chunk or mark complete',
+                'message': 'Images and masks received, send next chunk or mark complete',
                 'session_id': session_id
             }
             logger.debug(f"Sending response: {response}")
@@ -422,9 +447,16 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
+    # Check if masks exist
+    mask_files = glob.glob(os.path.join(masks_dir, '*'))
+    use_masks = len(mask_files) > 0
+    if use_masks:
+        logger.debug(f"Found {len(mask_files)} masks in {masks_dir}")
+
+    # Feature extraction with optional masking
     try:
         logger.debug("Running feature extraction")
-        process = subprocess.Popen([
+        feature_extractor_cmd = [
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'feature_extractor',
             '--database_path', database_path,
@@ -438,9 +470,15 @@ def process_video():
             '--SiftExtraction.max_num_features', '13000',
             '--SiftExtraction.estimate_affine_shape', '1',
             '--SiftExtraction.max_num_orientations', '3'
-
-
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        ]
+        if use_masks:
+            feature_extractor_cmd.extend(['--ImageReader.mask_path', masks_dir])
+        process = subprocess.Popen(
+            feature_extractor_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
         stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Feature extraction failed: {stderr}")
@@ -472,8 +510,6 @@ def process_video():
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '15'
-            #'--SiftMatching.guided_matching', '1'
-
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
@@ -503,7 +539,7 @@ def process_video():
             '--Mapper.ba_refine_principal_point', '0',
             '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1',
-            '--Mapper.ba_local_max_num_iterations', '100' # Increase local BA iterations
+            '--Mapper.ba_local_max_num_iterations', '100'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:

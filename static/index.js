@@ -1,5 +1,6 @@
 const videoInput = document.getElementById('videoInput');
 const imagesInput = document.getElementById('imagesInput');
+const masksInput = document.getElementById('masksInput'); // New input for masks
 const processButton = document.getElementById('processButton');
 const confirmButton = document.getElementById('confirmButton');
 const message = document.getElementById('message');
@@ -14,14 +15,19 @@ const timerDisplay = document.getElementById('timer');
 async function processInput() {
     const videoFile = videoInput.files[0];
     const imageFiles = imagesInput.files;
+    const maskFiles = masksInput.files; // New: Get mask files
 
     // Validate inputs
     if (!videoFile && (!imageFiles || imageFiles.length === 0)) {
         message.textContent = 'Please select a video or a folder of images.';
         return;
     }
-    if (videoFile && imageFiles.length > 0) {
-        message.textContent = 'Please select either a video or images, not both.';
+    if (videoFile && (imageFiles.length > 0 || maskFiles.length > 0)) {
+        message.textContent = 'Please select either a video or images/masks, not both.';
+        return;
+    }
+    if (maskFiles.length > 0 && (!imageFiles || imageFiles.length === 0)) {
+        message.textContent = 'Masks provided without images. Please upload images with masks.';
         return;
     }
 
@@ -34,7 +40,7 @@ async function processInput() {
     processButton.disabled = true;
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
-    message.textContent = videoFile ? 'Uploading video...' : 'Uploading images...';
+    message.textContent = videoFile ? 'Uploading video...' : 'Uploading images and masks...';
     timerDisplay.textContent = 'Processing time: 00:00';
 
     let timerInterval = null;
@@ -56,21 +62,28 @@ async function processInput() {
             const sortedImageFiles = Array.from(imageFiles).sort((a, b) =>
                 a.name.localeCompare(b.name, undefined, { numeric: true })
             );
+            const sortedMaskFiles = Array.from(maskFiles).sort((a, b) =>
+                a.name.localeCompare(b.name, undefined, { numeric: true })
+            );
             const chunkSize = 100;
             for (let i = 0; i < sortedImageFiles.length; i += chunkSize) {
-                const chunk = sortedImageFiles.slice(i, i + chunkSize);
+                const imageChunk = sortedImageFiles.slice(i, i + chunkSize);
+                const maskChunk = sortedMaskFiles.slice(i, i + chunkSize); // Match mask chunk to image chunk
                 const formData = new FormData();
                 if (sessionId) {
                     formData.append('session_id', sessionId);
                 }
-                chunk.forEach((file, index) => {
+                imageChunk.forEach((file, index) => {
                     formData.append('images', file, `frame_${(i + index).toString().padStart(4, '0')}.jpg`);
+                });
+                maskChunk.forEach((file, index) => {
+                    formData.append('masks', file, `frame_${(i + index).toString().padStart(4, '0')}.png`);
                 });
                 if (i + chunkSize >= sortedImageFiles.length) {
                     formData.append('complete', 'true');
                 }
-                console.log(`Sending image chunk ${i + 1}-${Math.min(i + chunkSize, sortedImageFiles.length)} with session_id:`, sessionId);
-                message.textContent = `Uploading images ${i + 1} to ${Math.min(i + chunkSize, sortedImageFiles.length)}...`;
+                console.log(`Sending chunk ${i + 1}-${Math.min(i + chunkSize, sortedImageFiles.length)} with ${imageChunk.length} images and ${maskChunk.length} masks, session_id:`, sessionId);
+                message.textContent = `Uploading images and masks ${i + 1} to ${Math.min(i + chunkSize, sortedImageFiles.length)}...`;
                 const chunkResult = await uploadData(formData, sortedImageFiles.length, i + chunkSize);
                 sessionId = chunkResult.session_id;
                 result = chunkResult.status === 'sparse_success' ? chunkResult : result;
