@@ -503,7 +503,6 @@ def process_video():
             '--Mapper.ba_refine_principal_point', '1',
             '--Mapper.ba_refine_extra_params', '1',
             '--Mapper.sphere_camera', '1',
-            '--Mapper.ba_global_use_pba', '1',  # Use PBA for better optimization
             '--Mapper.ba_local_max_num_iterations', '100' # Increase local BA iterations
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
