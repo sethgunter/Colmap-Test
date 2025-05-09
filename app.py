@@ -15,13 +15,13 @@ import glob
 import plyfile
 import pycolmap
 import numpy as np
+from threading import Thread
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
 app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))
 
 # Set up logging
-#1st MB 11:30 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,352 @@ def merge_ply_files(ply_files, output_path):
     plyfile.PlyData([vertex_element]).write(output_path)
     logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
 
+def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, poses_json_path):
+    """Export sparse PLY and camera poses."""
+    try:
+        logger.debug("Exporting sparse point cloud")
+        process = subprocess.Popen([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'model_converter',
+            '--input_path', sparse_model_dir,
+            '--output_path', output_sparse_ply,
+            '--output_type', 'PLY'
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Sparse point cloud export failed: {stderr}")
+            return False, f"Sparse point cloud export failed: {stderr}"
+        sparse_size = os.path.getsize(output_sparse_ply) / (1024 ** 2)
+        logger.debug(f"Sparse point cloud size: {sparse_size:.2f} MB")
+    except subprocess.TimeoutExpired:
+        logger.error("Sparse point cloud export timed out")
+        return False, "Sparse point cloud export timed out"
+
+    try:
+        logger.debug("Exporting camera poses")
+        process = subprocess.Popen([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'model_converter',
+            '--input_path', sparse_model_dir,
+            '--output_path', poses_dir,
+            '--output_type', 'TXT'
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            logger.error(f"Model converter failed: {stderr}")
+            return False, f"Model converter failed: {stderr}"
+    except subprocess.TimeoutExpired:
+        logger.error("Model conversion timed out")
+        return False, "Model conversion timed out"
+
+    try:
+        with open(os.path.join(poses_dir, 'images.txt')) as f:
+            lines = f.readlines()[4::2]
+            poses = {}
+            for line in lines:
+                parts = line.strip().split()
+                img_name = parts[-1]
+                qw, qx, qy, qz = map(float, parts[1:5])
+                tx, ty, tz = map(float, parts[5:8])
+                poses[img_name] = {'qw': qw, 'qx': qx, 'qy': qy, 'qz': qz, 'tx': tx, 'ty': ty, 'tz': tz}
+        with open(poses_json_path, 'w') as f:
+            json.dump(poses, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to parse camera poses: {str(e)}")
+        return False, f"Failed to parse camera poses: {str(e)}"
+
+    return True, ""
+
+def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_model_dir, images_dir, session_id):
+    """Perform dense reconstruction in a background thread."""
+    try:
+        dense_base_dir = os.path.join(base_dir, 'dense_chunks')
+        cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
+        chunk_size = 100
+        overlap = 20
+        step = chunk_size - overlap
+        image_list = sorted(cubic_image_files)
+        chunks = [image_list[i:i + chunk_size] for i in range(0, len(image_list), step) if image_list[i:i + chunk_size]]
+        logger.debug(f"Split {len(image_list)} images into {len(chunks)} chunks")
+
+        partial_ply_files = []
+        for idx, chunk in enumerate(chunks):
+            chunk_dir = os.path.join(dense_base_dir, f'chunk_{idx}')
+            os.makedirs(chunk_dir, exist_ok=True)
+            chunk_image_dir = os.path.join(chunk_dir, 'images')
+            os.makedirs(chunk_image_dir, exist_ok=True)
+            chunk_sparse_dir = os.path.join(chunk_dir, 'sparse')
+            os.makedirs(chunk_sparse_dir, exist_ok=True)
+
+            for img_path in chunk:
+                shutil.copy(img_path, chunk_image_dir)
+            chunk_image_names = [os.path.basename(img) for img in chunk]
+            logger.debug(f"Chunk {idx}: {len(chunk_image_names)}")
+
+            for img_name in chunk_image_names:
+                if not os.path.exists(os.path.join(chunk_image_dir, img_name)):
+                    logger.error(f"Image missing in chunk {idx}: {img_name}")
+                    session[f'dense_result_{session_id}'] = {
+                        'status': 'error',
+                        'message': f"Image missing in chunk {idx}: {img_name}"
+                    }
+                    return
+
+            try:
+                shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
+                reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
+                chunk_image_names_set = set(chunk_image_names)
+                images_to_remove = []
+                for img_id, img in reconstruction.images.items():
+                    img_name = os.path.basename(img.name)
+                    if img_name not in chunk_image_names_set:
+                        if reconstruction.exists_image(img_id):
+                            images_to_remove.append((img_id, img_name))
+
+                for img_id, img_name in images_to_remove:
+                    try:
+                        reconstruction.deregister_image(img_id)
+                    except Exception as e:
+                        logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
+
+                reconstruction.write(chunk_sparse_dir)
+                reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
+                filtered_image_names = [(img_id, os.path.basename(img.name)) 
+                                    for img_id, img in reconstruction.images.items()]
+                logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
+
+                if len(reconstruction.images) != len(chunk_image_names):
+                    logger.warning(f"Chunk {idx} deregister_image failed, falling back to new reconstruction")
+                    new_reconstruction = pycolmap.Reconstruction()
+                    for cam_id, cam in reconstruction.cameras.items():
+                        new_reconstruction.add_camera(cam)
+                    
+                    valid_image_ids = []
+                    for img_id, img in reconstruction.images.items():
+                        img_name = os.path.basename(img.name)
+                        if img_name in chunk_image_names_set and reconstruction.is_image_registered(img_id):
+                            new_reconstruction.add_image(img)
+                            valid_image_ids.append(img_id)
+                    
+                    for point3d_id, point3d in reconstruction.points3D.items():
+                        track = point3d.track
+                        has_valid_ref = any(elem.image_id in valid_image_ids for elem in track.elements)
+                        if has_valid_ref:
+                            new_reconstruction.add_point3D(point3d.xyz, point3d.track, point3d.color)
+                    
+                    new_reconstruction.write(chunk_sparse_dir)
+                    reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
+                    filtered_image_names = [(img_id, os.path.basename(img.name)) 
+                                        for img_id, img in reconstruction.images.items()]
+                    
+                    if len(reconstruction.images) != len(chunk_image_names):
+                        logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
+                        session[f'dense_result_{session_id}'] = {
+                            'status': 'error',
+                            'message': f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"
+                        }
+                        return
+            except Exception as e:
+                logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Failed to filter sparse model for chunk {idx}: {str(e)}"
+                }
+                return
+
+            try:
+                logger.debug(f"Undistorting images for chunk {idx}")
+                process = subprocess.Popen([
+                    'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                    'colmap', 'image_undistorter',
+                    '--image_path', chunk_image_dir,
+                    '--input_path', chunk_sparse_dir,
+                    '--output_path', chunk_dir,
+                    '--output_type', 'COLMAP',
+                    '--max_image_size', '600'
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = process.communicate()
+                if process.returncode != 0:
+                    logger.error(f"Undistortion failed for chunk {idx}: {stderr}")
+                    session[f'dense_result_{session_id}'] = {
+                        'status': 'error',
+                        'message': f"Undistortion failed for chunk {idx}: {stderr}"
+                    }
+                    return
+            except subprocess.TimeoutExpired:
+                logger.error(f"Undistortion timed out for chunk {idx}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Undistortion timed out for chunk {idx}"
+                }
+                return
+
+            try:
+                logger.debug(f"Running patch match stereo for chunk {idx}")
+                process = subprocess.Popen([
+                    'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                    'colmap', 'patch_match_stereo',
+                    '--workspace_path', chunk_dir,
+                    '--workspace_format', 'COLMAP',
+                    '--PatchMatchStereo.gpu_index', '0',
+                    '--PatchMatchStereo.max_image_size', '400',
+                    '--PatchMatchStereo.window_radius', '3',
+                    '--PatchMatchStereo.num_samples', '3',
+                    '--PatchMatchStereo.num_iterations', '3',
+                    '--PatchMatchStereo.cache_size', '4'
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = process.communicate()
+                if process.returncode != 0:
+                    logger.error(f"Patch match failed for chunk {idx}: {stderr}")
+                    session[f'dense_result_{session_id}'] = {
+                        'status': 'error',
+                        'message': f"Patch match failed for chunk {idx}: {stderr}"
+                    }
+                    return
+            except subprocess.TimeoutExpired:
+                logger.error(f"Patch match timed out for chunk {idx}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Patch match timed out for chunk {idx}"
+                }
+                return
+
+            depth_maps_dir = os.path.join(chunk_dir, 'stereo', 'depth_maps')
+            if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
+                logger.error(f"No depth maps for chunk {idx}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"No depth maps for chunk {idx}"
+                }
+                return
+
+            ram_ok, available_ram = check_ram_for_fusion()
+            if not ram_ok:
+                logger.error(f"Insufficient RAM for chunk {idx}: {available_ram}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': available_ram
+                }
+                return
+            gpus = GPUtil.getGPUs()
+            free_memory_mb = gpus[0].memoryFree if gpus else 0
+            if free_memory_mb < 3000:
+                logger.error(f"Insufficient GPU memory for chunk {idx}: {free_memory_mb} MB")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Insufficient GPU memory for chunk {idx}"
+                }
+                return
+            disk = shutil.disk_usage('/app')
+            free_gb = disk.free / (1024**3)
+            if free_gb < 1:
+                logger.error(f"Insufficient disk space for chunk {idx}: {free_gb:.2f} GB")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Insufficient disk space for chunk {idx}"
+                }
+                return
+            logger.debug(f"Resources for chunk {idx}: RAM={available_ram} MB, GPU={free_memory_mb} MB, Disk={free_gb} GB")
+            cache_size = min(4, max(1, int((available_ram / 1024) * 0.5)))
+            partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
+            try:
+                logger.debug(f"Running stereo fusion for chunk {idx}")
+                process = subprocess.Popen([
+                    'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                    'colmap', 'stereo_fusion',
+                    '--workspace_path', chunk_dir,
+                    '--workspace_format', 'COLMAP',
+                    '--input_type', 'photometric',
+                    '--output_path', partial_ply,
+                    '--StereoFusion.min_num_pixels', '2',
+                    '--StereoFusion.check_num_images', '2',
+                    '--StereoFusion.max_reproj_error', '2',
+                    '--StereoFusion.max_depth_error', '0.3',
+                    '--StereoFusion.cache_size', str(cache_size)
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+                stdout, stderr = process.communicate()
+                if process.returncode != 0:
+                    logger.error(f"Stereo fusion failed for chunk {idx}: {stderr} {stdout}")
+                    logger.debug(f"Raw stderr content: {repr(stderr)}")
+                    if not stderr:
+                        logger.error(f"No stderr output from stereo fusion for chunk {idx}")
+                    logger.debug(f"stdout content: {repr(stdout)}")
+                    for handler in logger.handlers:
+                        handler.flush()
+                    session[f'dense_result_{session_id}'] = {
+                        'status': 'error',
+                        'message': f"Stereo fusion failed for chunk {idx}: {stderr}"
+                    }
+                    return
+            except subprocess.TimeoutExpired:
+                logger.error(f"Stereo fusion timed out for chunk {idx}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Stereo fusion timed out for chunk {idx}"
+                }
+                return
+            except Exception as e:
+                logger.error(f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}"
+                }
+                return
+
+            if not os.path.exists(partial_ply):
+                logger.error(f"No dense point cloud for chunk {idx}")
+                session[f'dense_result_{session_id}'] = {
+                    'status': 'error',
+                    'message': f"No dense point cloud for chunk {idx}"
+                }
+                return
+            partial_ply_files.append(partial_ply)
+
+        output_dense_ply = os.path.join(base_dir, 'dense.ply')
+        try:
+            logger.debug("Merging partial dense point clouds")
+            merge_ply_files(partial_ply_files, output_dense_ply)
+            dense_size = os.path.getsize(output_dense_ply) / (1024 ** 2)
+            logger.debug(f"Merged dense point cloud size: {dense_size:.2f} MB")
+            os.chmod(output_dense_ply, 0o644)
+        except Exception as e:
+            logger.error(f"Failed to merge point clouds: {str(e)}")
+            session[f'dense_result_{session_id}'] = {
+                'status': 'error',
+                'message': f"Failed to merge point clouds: {str(e)}"
+            }
+            return
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            if os.path.exists(os.path.join(base_dir, 'sparse.ply')):
+                zip_file.write(os.path.join(base_dir, 'sparse.ply'), 'sparse.ply')
+            if os.path.exists(output_dense_ply):
+                zip_file.write(output_dense_ply, 'dense.ply')
+            if os.path.exists(os.path.join(base_dir, 'camera_poses.json')):
+                zip_file.write(os.path.join(base_dir, 'camera_poses.json'), 'camera_poses.json')
+
+        zip_buffer.seek(0)
+        zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
+        with open(zip_temp_path, 'wb') as f:
+            f.write(zip_buffer.getvalue())
+
+        session[f'dense_result_{session_id}'] = {
+            'status': 'success',
+            'message': 'Processing complete',
+            'sparse_ply_path': f'/output/{request_id}/sparse.ply',
+            'dense_ply_path': f'/output/{request_id}/dense.ply',
+            'poses_path': f'/output/{request_id}/camera_poses.json',
+            'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
+            'input_save_time': session.get(f'input_save_time_{session_id}')
+        }
+    except Exception as e:
+        logger.error(f"Dense processing failed: {str(e)}")
+        session[f'dense_result_{session_id}'] = {
+            'status': 'error',
+            'message': f"Dense processing failed: {str(e)}"
+        }
+
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
@@ -244,17 +590,16 @@ def process_video():
         return {"status": "error", "message": "Please provide either a video or images, not both"}, 400
 
     input_save_time = time.time()
+    session[f'input_save_time_{session_id}'] = input_save_time
     if is_video:
         # Handle video upload
         video = request.files['video']
         video_path = os.path.join(video_dir, video.filename)
         logger.debug(f"Saving video: {video_path}")
         try:
-            # Save video with explicit file handling
             with open(video_path, 'wb') as f:
                 f.write(video.read())
             logger.debug(f"Video saved: {video_path}, size: {os.path.getsize(video_path)} bytes")
-            # Verify file integrity with ffprobe
             process = subprocess.Popen(['ffprobe', video_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             _, ffprobe_stderr = process.communicate(timeout=30)
             if process.returncode != 0:
@@ -433,278 +778,37 @@ def process_video():
         logger.error("Cubic reprojection timed out")
         return {"status": "error", "message": "Cubic reprojection timed out"}, 500
 
-    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
-    chunk_size = 100
-    overlap = 20
-    step = chunk_size - overlap
-    image_list = sorted(cubic_image_files)
-    chunks = [image_list[i:i + chunk_size] for i in range(0, len(image_list), step) if image_list[i:i + chunk_size]]
-    logger.debug(f"Split {len(image_list)} images into {len(chunks)} chunks")
-
-    partial_ply_files = []
-    for idx, chunk in enumerate(chunks):
-        chunk_dir = os.path.join(dense_base_dir, f'chunk_{idx}')
-        os.makedirs(chunk_dir, exist_ok=True)
-        chunk_image_dir = os.path.join(chunk_dir, 'images')
-        os.makedirs(chunk_image_dir, exist_ok=True)
-        chunk_sparse_dir = os.path.join(chunk_dir, 'sparse')
-        os.makedirs(chunk_sparse_dir, exist_ok=True)
-
-        for img_path in chunk:
-            shutil.copy(img_path, chunk_image_dir)
-        chunk_image_names = [os.path.basename(img) for img in chunk]
-        logger.debug(f"Chunk {idx}: {len(chunk_image_names)}")
-
-        for img_name in chunk_image_names:
-            if not os.path.exists(os.path.join(chunk_image_dir, img_name)):
-                logger.error(f"Image missing in chunk {idx}: {img_name}")
-                return {"status": "error", "message": f"Image missing in chunk {idx}: {img_name}"}, 500
-
-        try:
-            shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
-            reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            chunk_image_names_set = set(chunk_image_names)
-            images_to_remove = []
-            for img_id, img in reconstruction.images.items():
-                img_name = os.path.basename(img.name)
-                if img_name not in chunk_image_names_set:
-                    if reconstruction.exists_image(img_id):
-                        images_to_remove.append((img_id, img_name))
-
-            for img_id, img_name in images_to_remove:
-                try:
-                    reconstruction.deregister_image(img_id)
-                except Exception as e:
-                    logger.warning(f"Chunk {idx} failed to deregister image {img_name} (ID: {img_id}): {str(e)}")
-
-            reconstruction.write(chunk_sparse_dir)
-            reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            filtered_image_names = [(img_id, os.path.basename(img.name)) 
-                                for img_id, img in reconstruction.images.items()]
-            logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
-
-            if len(reconstruction.images) != len(chunk_image_names):
-                logger.warning(f"Chunk {idx} deregister_image failed, falling back to new reconstruction")
-                new_reconstruction = pycolmap.Reconstruction()
-                for cam_id, cam in reconstruction.cameras.items():
-                    new_reconstruction.add_camera(cam)
-                
-                valid_image_ids = []
-                for img_id, img in reconstruction.images.items():
-                    img_name = os.path.basename(img.name)
-                    if img_name in chunk_image_names_set and reconstruction.is_image_registered(img_id):
-                        new_reconstruction.add_image(img)
-                        valid_image_ids.append(img_id)
-                
-                for point3d_id, point3d in reconstruction.points3D.items():
-                    track = point3d.track
-                    has_valid_ref = any(elem.image_id in valid_image_ids for elem in track.elements)
-                    if has_valid_ref:
-                        new_reconstruction.add_point3D(point3d.xyz, point3d.track, point3d.color)
-                
-                new_reconstruction.write(chunk_sparse_dir)
-                reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-                filtered_image_names = [(img_id, os.path.basename(img.name)) 
-                                    for img_id, img in reconstruction.images.items()]
-                
-                if len(reconstruction.images) != len(chunk_image_names):
-                    logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
-                    return {"status": "error", "message": f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"}, 500
-        except Exception as e:
-            logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
-            return {"status": "error", "message": f"Failed to filter sparse model for chunk {idx}: {str(e)}"}, 500
-
-        try:
-            logger.debug(f"Undistorting images for chunk {idx}")
-            process = subprocess.Popen([
-                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-                'colmap', 'image_undistorter',
-                '--image_path', chunk_image_dir,
-                '--input_path', chunk_sparse_dir,
-                '--output_path', chunk_dir,
-                '--output_type', 'COLMAP',
-                '--max_image_size', '600'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                logger.error(f"Undistortion failed for chunk {idx}: {stderr}")
-                return {"status": "error", "message": f"Undistortion failed for chunk {idx}: {stderr}"}, 500
-        except subprocess.TimeoutExpired:
-            logger.error(f"Undistortion timed out for chunk {idx}")
-            return {"status": "error", "message": f"Undistortion timed out for chunk {idx}"}, 500
-
-        try:
-            logger.debug(f"Running patch match stereo for chunk {idx}")
-            process = subprocess.Popen([
-                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-                'colmap', 'patch_match_stereo',
-                '--workspace_path', chunk_dir,
-                '--workspace_format', 'COLMAP',
-                '--PatchMatchStereo.gpu_index', '0',
-                '--PatchMatchStereo.max_image_size', '400',
-                '--PatchMatchStereo.window_radius', '3',
-                '--PatchMatchStereo.num_samples', '3',
-                '--PatchMatchStereo.num_iterations', '3',
-                '--PatchMatchStereo.cache_size', '4'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                logger.error(f"Patch match failed for chunk {idx}: {stderr}")
-                return {"status": "error", "message": f"Patch match failed for chunk {idx}: {stderr}"}, 500
-            
-        except subprocess.TimeoutExpired:
-            logger.error(f"Patch match timed out for chunk {idx}")
-            return {"status": "error", "message": f"Patch match timed out for chunk {idx}"}, 500
-
-        depth_maps_dir = os.path.join(chunk_dir, 'stereo', 'depth_maps')
-        if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
-            logger.error(f"No depth maps for chunk {idx}")
-            return {"status": "error", "message": f"No depth maps for chunk {idx}"}, 500
-
-        ram_ok, available_ram = check_ram_for_fusion()
-        if not ram_ok:
-            logger.error(f"Insufficient RAM for chunk {idx}: {available_ram}")
-            return {"status": "error", "message": available_ram}, 500
-        gpus = GPUtil.getGPUs()
-        free_memory_mb = gpus[0].memoryFree if gpus else 0
-        if free_memory_mb < 3000:
-            logger.error(f"Insufficient GPU memory for chunk {idx}: {free_memory_mb} MB")
-            return {"status": "error", "message": f"Insufficient GPU memory for chunk {idx}"}, 500
-        disk = shutil.disk_usage('/app')
-        free_gb = disk.free / (1024**3)
-        if free_gb < 1:
-            logger.error(f"Insufficient disk space for chunk {idx}: {free_gb:.2f} GB")
-            return {"status": "error", "message": f"Insufficient disk space for chunk {idx}"}, 500
-        logger.debug(f"Resources for chunk {idx}: RAM={available_ram} MB, GPU={free_memory_mb} MB, Disk={free_gb} GB")
-        cache_size = min(4, max(1, int((available_ram / 1024) * 0.5)))
-        partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
-        try:
-            logger.debug(f"Running stereo fusion for chunk {idx}")
-            process = subprocess.Popen([
-                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-                'colmap', 'stereo_fusion',
-                '--workspace_path', chunk_dir,
-                '--workspace_format', 'COLMAP',
-                '--input_type', 'photometric',
-                '--output_path', partial_ply,
-                '--StereoFusion.min_num_pixels', '2',
-                '--StereoFusion.check_num_images', '2',
-                '--StereoFusion.max_reproj_error', '2',
-                '--StereoFusion.max_depth_error', '0.3',
-                '--StereoFusion.cache_size', str(cache_size)
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)  # Line buffering
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                logger.error(f"Stereo fusion failed for chunk {idx}: {stderr} {stdout}")
-                logger.debug(f"Raw stderr content: {repr(stderr)}")  # Log raw stderr for inspection
-                if not stderr:
-                    logger.error(f"No stderr output from stereo fusion for chunk {idx}")
-                # Log stdout for additional context
-                logger.debug(f"stdout content: {repr(stdout)}")
-                # Force flush logs
-                for handler in logger.handlers:
-                    handler.flush()
-                return {"status": "error", "message": f"Stereo fusion failed for chunk {idx}: {stderr}"}, 500
-        except subprocess.TimeoutExpired:
-            logger.error(f"Stereo fusion timed out for chunk {idx}")
-            return {"status": "error", "message": f"Stereo fusion timed out for chunk {idx}"}, 500
-        except Exception as e:
-            logger.error(f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}")
-            return {"status": "error", "message": f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}"}, 500
-
-        if not os.path.exists(partial_ply):
-            logger.error(f"No dense point cloud for chunk {idx}")
-            return {"status": "error", "message": f"No dense point cloud for chunk {idx}"}, 500
-        partial_ply_files.append(partial_ply)
-
-    output_dense_ply = os.path.join(base_dir, 'dense.ply')
-    try:
-        logger.debug("Merging partial dense point clouds")
-        merge_ply_files(partial_ply_files, output_dense_ply)
-        dense_size = os.path.getsize(output_dense_ply) / (1024 ** 2)
-        logger.debug(f"Merged dense point cloud size: {dense_size:.2f} MB")
-        os.chmod(output_dense_ply, 0o644)
-    except Exception as e:
-        logger.error(f"Failed to merge point clouds: {str(e)}")
-        return {"status": "error", "message": f"Failed to merge point clouds: {str(e)}"}, 500
-
-    try:
-        logger.debug("Exporting camera poses")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'model_converter',
-            '--input_path', sparse_model_dir,
-            '--output_path', poses_dir,
-            '--output_type', 'TXT'
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            logger.error(f"Model converter failed: {stderr}")
-            return {"status": "error", "message": f"Model converter failed: {stderr}"}, 500
-    except subprocess.TimeoutExpired:
-        logger.error("Model conversion timed out")
-        return {"status": "error", "message": "Model conversion timed out"}, 500
-
-    poses_json_path = os.path.join(base_dir, 'camera_poses.json')
-    try:
-        with open(os.path.join(poses_dir, 'images.txt')) as f:
-            lines = f.readlines()[4::2]
-            poses = {}
-            for line in lines:
-                parts = line.strip().split()
-                img_name = parts[-1]
-                qw, qx, qy, qz = map(float, parts[1:5])
-                tx, ty, tz = map(float, parts[5:8])
-                poses[img_name] = {'qw': qw, 'qx': qx, 'qy': qy, 'qz': qz, 'tx': tx, 'ty': ty, 'tz': tz}
-        with open(poses_json_path, 'w') as f:
-            json.dump(poses, f, indent=4)
-    except Exception as e:
-        logger.error(f"Failed to parse camera poses: {str(e)}")
-        return {"status": "error", "message": f"Failed to parse camera poses: {str(e)}"}, 500
-
+    # Export sparse PLY and camera poses
     output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
-    try:
-        logger.debug("Exporting sparse point cloud")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'model_converter',
-            '--input_path', sparse_model_dir,
-            '--output_path', output_sparse_ply,
-            '--output_type', 'PLY'
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            logger.error(f"Sparse point cloud export failed: {stderr}")
-            return {"status": "error", "message": f"Sparse point cloud export failed: {stderr}"}, 500
-        sparse_size = os.path.getsize(output_sparse_ply) / (1024 ** 2)
-        logger.debug(f"Sparse point cloud size: {sparse_size:.2f} MB")
-    except subprocess.TimeoutExpired:
-        logger.error("Sparse point cloud export timed out")
-        return {"status": "error", "message": "Sparse point cloud export timed out"}, 500
+    poses_json_path = os.path.join(base_dir, 'camera_poses.json')
+    success, error_message = export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, poses_json_path)
+    if not success:
+        return {"status": "error", "message": error_message}, 500
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        if os.path.exists(output_sparse_ply):
-            zip_file.write(output_sparse_ply, 'sparse.ply')
-        if os.path.exists(output_dense_ply):
-            zip_file.write(output_dense_ply, 'dense.ply')
-        if os.path.exists(poses_json_path):
-            zip_file.write(poses_json_path, 'camera_poses.json')
-
-    zip_buffer.seek(0)
-    zip_temp_path = os.path.join(base_dir, 'reconstruction_bundle.zip')
-    with open(zip_temp_path, 'wb') as f:
-        f.write(zip_buffer.getvalue())
+    # Start dense processing in a background thread
+    dense_thread = Thread(target=perform_dense_processing, args=(request_id, base_dir, sparse_cubic_dir, sparse_model_dir, images_dir, session_id))
+    dense_thread.start()
 
     return {
-        'status': 'success',
-        'message': 'Processing complete',
+        'status': 'sparse_success',
+        'message': 'Sparse reconstruction complete, dense processing started',
         'sparse_ply_path': f'/output/{request_id}/sparse.ply',
-        'dense_ply_path': f'/output/{request_id}/dense.ply',
         'poses_path': f'/output/{request_id}/camera_poses.json',
-        'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
+        'session_id': session_id,
         'input_save_time': input_save_time
     }, 200
+
+@app.route('/check-dense-status', methods=['POST'])
+def check_dense_status():
+    session_id = request.form.get('session_id')
+    if not session_id:
+        return {"status": "error", "message": "No session ID provided"}, 400
+
+    dense_result = session.get(f'dense_result_{session_id}')
+    if not dense_result:
+        return {"status": "processing", "message": "Dense reconstruction still in progress"}, 200
+
+    return dense_result, 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)

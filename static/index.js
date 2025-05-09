@@ -36,18 +36,6 @@ async function processInput() {
     message.textContent = videoFile ? 'Uploading video...' : 'Uploading images...';
     timerDisplay.textContent = 'Processing time: 00:00';
 
-    // Preload audio to unlock context
-    const alarm = new Audio('/static/alarm.mp3');
-    alarm.muted = true;
-    alarm.play().then(() => {
-        alarm.pause();
-        alarm.muted = false;
-        alarm.currentTime = 0;
-        console.log('Audio context unlocked');
-    }).catch(error => {
-        console.warn('Failed to unlock audio context:', error);
-    });
-
     let timerInterval = null;
     let sessionId = null;
 
@@ -76,7 +64,7 @@ async function processInput() {
                 message.textContent = `Uploading images ${i + 1} to ${Math.min(i + chunkSize, sortedImageFiles.length)}...`;
                 const chunkResult = await uploadData(formData, sortedImageFiles.length, i + chunkSize);
                 sessionId = chunkResult.session_id || sessionId;
-                result = chunkResult.status === 'success' ? chunkResult : result;
+                result = chunkResult.status === 'sparse_success' || chunkResult.status === 'success' ? chunkResult : result;
             }
         }
 
@@ -105,7 +93,7 @@ async function processInput() {
             });
         }
 
-        if (!result || result.status !== 'success') {
+        if (!result || (result.status !== 'sparse_success' && result.status !== 'success')) {
             throw new Error(result?.message || 'Server error');
         }
 
@@ -124,40 +112,9 @@ async function processInput() {
             timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
         }, 1000);
 
-        // Play alarm sound on success
-        alarm.play().catch(error => {
-            console.error('Failed to play alarm:', error);
-            message.textContent = 'Processing complete. Click to play notification sound.';
-            const playButton = document.createElement('button');
-            playButton.textContent = 'Play Sound';
-            playButton.onclick = () => {
-                alarm.play().catch(err => console.error('Retry failed:', err));
-                playButton.remove();
-            };
-            message.appendChild(playButton);
-        });
-
-        message.textContent = 'Processing complete';
-        progressBar.style.width = '100%';
-        viewDenseButton.style.display = 'block';
+        message.textContent = 'Sparse reconstruction complete';
+        progressBar.style.width = '50%';
         viewSparseButton.style.display = 'block';
-        downloadButton.style.display = 'block';
-
-        console.log('Dense model ready, stopping timer');
-        if (timerInterval) {
-            clearInterval(timerInterval);
-            const elapsedMs = Date.now() - inputSaveTime;
-            const elapsed = Math.floor(elapsedMs / 1000);
-            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
-            const seconds = (elapsed % 60).toString().padStart(2, '0');
-            timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
-        }
-
-        viewDenseButton.onclick = () => {
-            container.style.display = 'block';
-            initThreeJS(result.dense_ply_path, result.poses_path);
-            message.textContent = 'Dense model displayed';
-        };
 
         viewSparseButton.onclick = () => {
             container.style.display = 'block';
@@ -165,13 +122,95 @@ async function processInput() {
             message.textContent = 'Sparse model displayed';
         };
 
-        downloadButton.onclick = () => {
-            const zipLink = document.createElement('a');
-            zipLink.href = result.zip_path;
-            zipLink.download = 'reconstruction_bundle.zip';
-            zipLink.click();
-            message.textContent = 'Download started';
-        };
+        // Poll for dense reconstruction status
+        if (result.status === 'sparse_success') {
+            message.textContent = 'Sparse reconstruction complete, processing dense model...';
+            const pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/check-dense-status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: `session_id=${encodeURIComponent(result.session_id)}`
+                    });
+                    const denseResult = await response.json();
+
+                    if (denseResult.status === 'processing') {
+                        return; // Continue polling
+                    }
+
+                    clearInterval(pollInterval);
+                    if (denseResult.status === 'success') {
+                        message.textContent = 'Dense reconstruction complete';
+                        progressBar.style.width = '100%';
+                        viewDenseButton.style.display = 'block';
+                        downloadButton.style.display = 'block';
+
+                        viewDenseButton.onclick = () => {
+                            container.style.display = 'block';
+                            initThreeJS(denseResult.dense_ply_path, denseResult.poses_path);
+                            message.textContent = 'Dense model displayed';
+                        };
+
+                        downloadButton.onclick = () => {
+                            const zipLink = document.createElement('a');
+                            zipLink.href = denseResult.zip_path;
+                            zipLink.download = 'reconstruction_bundle.zip';
+                            zipLink.click();
+                            message.textContent = 'Download started';
+                        };
+
+                        if (timerInterval) {
+                            clearInterval(timerInterval);
+                            const elapsedMs = Date.now() - inputSaveTime;
+                            const elapsed = Math.floor(elapsedMs / 1000);
+                            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+                            const seconds = (elapsed % 60).toString().padStart(2, '0');
+                            timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+                        }
+                    } else {
+                        throw new Error(denseResult.message || 'Dense reconstruction failed');
+                    }
+                } catch (error) {
+                    console.error('Dense status check error:', error);
+                    message.textContent = `Error: ${error.message}`;
+                    clearInterval(pollInterval);
+                    if (timerInterval) {
+                        clearInterval(timerInterval);
+                        timerDisplay.textContent = 'Processing time: stopped due to error';
+                    }
+                }
+            }, 5000); // Poll every 5 seconds
+        } else {
+            // If dense reconstruction is already complete
+            message.textContent = 'Processing complete';
+            progressBar.style.width = '100%';
+            viewDenseButton.style.display = 'block';
+            viewSparseButton.style.display = 'block';
+            downloadButton.style.display = 'block';
+
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                const elapsedMs = Date.now() - inputSaveTime;
+                const elapsed = Math.floor(elapsedMs / 1000);
+                const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+                const seconds = (elapsed % 60).toString().padStart(2, '0');
+                timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+            }
+
+            viewDenseButton.onclick = () => {
+                container.style.display = 'block';
+                initThreeJS(result.dense_ply_path, result.poses_path);
+                message.textContent = 'Dense model displayed';
+            };
+
+            downloadButton.onclick = () => {
+                const zipLink = document.createElement('a');
+                zipLink.href = result.zip_path;
+                zipLink.download = 'reconstruction_bundle.zip';
+                zipLink.click();
+                message.textContent = 'Download started';
+            };
+        }
     } catch (error) {
         console.error('Processing error:', error);
         message.textContent = `Error: ${error.message}`;
