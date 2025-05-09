@@ -575,8 +575,8 @@ def process_video():
 
         # Geometric verification
         loop_closures = []
-        min_inliers = 20  # Reduced to 20 for more matches
-        max_reproj_error = 5.0  # Increased to 5.0 pixels for flexibility
+        min_inliers = 30  # Reduced to 20 for more matches
+        max_reproj_error = 7.0  # Increased to 5.0 pixels for flexibility
         for img_id1, img_id2, img_name1, img_name2 in candidate_pairs:
             img1_path = os.path.join(images_dir, img_name1)
             img2_path = os.path.join(images_dir, img_name2)
