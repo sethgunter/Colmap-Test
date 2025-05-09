@@ -516,7 +516,6 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-        # --- Start of Loop Closure Detection (Modified for SphereSfM) ---
         # --- Start of Loop Closure Detection (Using pycolmap) ---
     try:
         logger.debug("Running distance-based loop closure detection")
@@ -532,38 +531,53 @@ def process_video():
             if not image.has_pose:
                 logger.warning(f"Image {image.name} has no pose, skipping")
                 continue
-            # Use projection_center for translation vector
             t = image.projection_center()
-            # Use cam_from_world for pose
             pose = image.cam_from_world
-            R = pose.rotation.matrix()  # Convert Rotation3d to 3x3 matrix
+            R = pose.rotation.matrix()
             poses.append((t, R))
             translations.append(t)
             image_ids.append(image_id)
             image_names.append(image.name)
 
         translations = np.array(translations)
+        logger.info(f"Extracted {len(translations)} valid poses")
         if len(translations) == 0:
             logger.warning("No valid poses found, skipping loop closure detection")
             raise Exception("No valid poses found")
 
         # Build KD-tree for proximity search
         kdtree = KDTree(translations)
-        distance_threshold = 0.5  # meters, adjust based on scene scale
-        temporal_threshold = 10  # Minimum frame difference for loop closures
+        distance_threshold = 1.0  # Set to 1.0 meter for more candidates
+        temporal_threshold = 10
+        sequence_window = 5  # Check ±5 frames in sequence
 
-        # Find candidate pairs
+        # Find candidate pairs and include nearby frames
         candidate_pairs = []
         for i, t in enumerate(translations):
             indices = kdtree.query_ball_point(t, distance_threshold)
             for j in indices:
-                if i < j and abs(image_ids[i] - image_ids[j]) >= temporal_threshold:  # Enforce 10-frame difference
+                if i < j and abs(image_ids[i] - image_ids[j]) >= temporal_threshold:
+                    # Add primary pair
                     candidate_pairs.append((image_ids[i], image_ids[j], image_names[i], image_names[j]))
+                    # Add nearby frames in sequence for j
+                    frame_j_idx = int(image_names[j].split('_')[1].split('.')[0])
+                    for offset in range(-sequence_window, sequence_window + 1):
+                        if offset == 0:
+                            continue
+                        nearby_idx = frame_j_idx + offset
+                        nearby_name = f"frame_{nearby_idx:04d}.jpg"
+                        if nearby_name in image_names:
+                            nearby_id = image_ids[image_names.index(nearby_name)]
+                            if abs(image_ids[i] - nearby_id) >= temporal_threshold:
+                                candidate_pairs.append((image_ids[i], nearby_id, image_names[i], nearby_name))
+
+        logger.info(f"Found {len(candidate_pairs)} candidate pairs")
 
         # Geometric verification
         loop_closures = []
+        min_inliers = 20  # Reduced to 20 for more matches
+        max_reproj_error = 5.0  # Increased to 5.0 pixels for flexibility
         for img_id1, img_id2, img_name1, img_name2 in candidate_pairs:
-            # Load images
             img1_path = os.path.join(images_dir, img_name1)
             img2_path = os.path.join(images_dir, img_name2)
             img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
@@ -572,34 +586,35 @@ def process_video():
                 logger.warning(f"Failed to load images: {img_name1}, {img_name2}")
                 continue
 
-            # Extract and match features
-            sift = cv2.SIFT_create(nfeatures=13000, contrastThreshold=0.0001)
+            sift = cv2.SIFT_create(nfeatures=20000, contrastThreshold=0.00005)  # Increased features, relaxed threshold
             kp1, desc1 = sift.detectAndCompute(img1, None)
             kp2, desc2 = sift.detectAndCompute(img2, None)
             if desc1 is None or desc2 is None:
                 logger.warning(f"No features detected for pair: {img_name1}, {img_name2}")
                 continue
 
-            matcher = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-            matches = matcher.match(desc1, desc2)
-            matches = sorted(matches, key=lambda x: x.distance)
+            matcher = cv2.BFMatcher(cv2.NORM_L2)
+            matches = matcher.knnMatch(desc1, desc2, k=2)
+            good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]  # Ratio test with 0.75
+            if len(good_matches) < min_inliers:
+                logger.debug(f"Insufficient matches ({len(good_matches)}) for pair: {img_name1}, {img_name2}")
+                continue
 
-            # Estimate fundamental matrix with RANSAC
-            pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
-            pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+            pts1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
+            pts2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
             F, inliers = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC, ransacReprojThreshold=1.5)
             inlier_count = np.sum(inliers) if inliers is not None else 0
-            if inlier_count < 50:  # Require at least 50 inliers
+            if inlier_count < min_inliers:
                 logger.debug(f"Insufficient inliers ({inlier_count}) for pair: {img_name1}, {img_name2}")
                 continue
 
-            # Triangulate points and check reprojection error
-            P1 = np.hstack((poses[i][1], poses[i][0].reshape(-1, 1)))  # R | t
-            P2 = np.hstack((poses[j][1], poses[j][0].reshape(-1, 1)))  # R | t
+            idx1 = image_names.index(img_name1)
+            idx2 = image_names.index(img_name2)
+            P1 = np.hstack((poses[idx1][1], poses[idx1][0].reshape(-1, 1)))
+            P2 = np.hstack((poses[idx2][1], poses[idx2][0].reshape(-1, 1)))
             points4d = cv2.triangulatePoints(P1, P2, pts1[inliers.ravel() > 0].T, pts2[inliers.ravel() > 0].T)
             points3d = points4d[:3] / points4d[3]
 
-            # Reprojection error for spherical model (simplified)
             reproj_error = 0
             for k in range(points3d.shape[1]):
                 pt3d = points3d[:, k]
@@ -609,14 +624,14 @@ def process_video():
                 reproj_error += np.linalg.norm(proj2[:2] / proj2[2] - pts2[inliers.ravel() > 0][k]) ** 2
             reproj_error = np.sqrt(reproj_error / (2 * points3d.shape[1]))
 
-            if reproj_error > 1.5:  # Stricter threshold for 1920x960 images
+            if reproj_error > max_reproj_error:
                 logger.debug(f"High reprojection error ({reproj_error}) for pair: {img_name1}, {img_name2}")
                 continue
 
-            loop_closures.append((img_id1, img_id2, matches, inliers))
+            loop_closures.append((img_id1, img_id2, good_matches, inliers))
             logger.debug(f"Valid loop closure found: {img_name1}, {img_name2} with {inlier_count} inliers, reproj error {reproj_error}")
 
-        # Update database with loop closures
+        logger.info(f"Found {len(loop_closures)} verified loop closures")
         if loop_closures:
             logger.debug("Updating database with loop closures")
             conn = sqlite3.connect(database_path)
@@ -634,7 +649,6 @@ def process_video():
             conn.commit()
             conn.close()
 
-            # Rerun mapper with loop closures
             logger.debug("Running sparse reconstruction with loop closures")
             process = subprocess.Popen([
                 'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -673,7 +687,6 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
     # --- End of Loop Closure Detection ---
-
     try:
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
