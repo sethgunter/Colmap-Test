@@ -516,7 +516,7 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # --- Start of Loop Closure Detection ---
+    # --- Start of Loop Closure Detection (Modified for SphereSfM) ---
     try:
         logger.debug("Running distance-based loop closure detection")
         # Load reconstruction
@@ -526,13 +526,28 @@ def process_video():
         poses = []
         image_ids = []
         image_names = []
+        translations = []
         for image_id, image in reconstruction.images.items():
-            t = image.tvec
-            R = image.qvec2rotmat()
+            if not image.has_pose():
+                logger.warning(f"Image {image.name} has no pose, skipping")
+                continue
+            # Use projection_center for translation vector
+            t = image.projection_center
+            # Use cam_from_world for rotation matrix (assuming it returns a 4x4 matrix or pose object)
+            pose = image.cam_from_world
+            if hasattr(pose, 'rotation'):  # Check if pose is an object with rotation attribute
+                R = pose.rotation
+            else:  # Assume pose is a 4x4 matrix
+                R = np.array(pose)[:3, :3] if isinstance(pose, (list, np.ndarray)) else pose[:3, :3]
             poses.append((t, R))
+            translations.append(t)
             image_ids.append(image_id)
             image_names.append(image.name)
-        translations = np.array([p[0] for p in poses])
+
+        translations = np.array(translations)
+        if len(translations) == 0:
+            logger.warning("No valid poses found, skipping loop closure detection")
+            raise Exception("No valid poses found")
 
         # Build KD-tree for proximity search
         kdtree = KDTree(translations)
@@ -581,8 +596,8 @@ def process_video():
                 continue
 
             # Triangulate points and check reprojection error
-            P1 = np.hstack((reconstruction.images[img_id1].qvec2rotmat(), reconstruction.images[img_id1].tvec.reshape(-1, 1)))
-            P2 = np.hstack((reconstruction.images[img_id2].qvec2rotmat(), reconstruction.images[img_id2].tvec.reshape(-1, 1)))
+            P1 = np.hstack((poses[i][1], poses[i][0].reshape(-1, 1)))  # R | t
+            P2 = np.hstack((poses[j][1], poses[j][0].reshape(-1, 1)))  # R | t
             points4d = cv2.triangulatePoints(P1, P2, pts1[inliers.ravel() > 0].T, pts2[inliers.ravel() > 0].T)
             points3d = points4d[:3] / points4d[3]
 
