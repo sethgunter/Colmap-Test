@@ -21,6 +21,7 @@ app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
 app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))
 
 # Set up logging
+#1st MB 11:30 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
