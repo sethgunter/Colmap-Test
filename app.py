@@ -517,6 +517,7 @@ def process_video():
         return response, 500
 
         # --- Start of Loop Closure Detection (Modified for SphereSfM) ---
+        # --- Start of Loop Closure Detection (Using pycolmap) ---
     try:
         logger.debug("Running distance-based loop closure detection")
         # Load reconstruction
@@ -528,25 +529,14 @@ def process_video():
         image_names = []
         translations = []
         for image_id, image in reconstruction.images.items():
-            if not image.has_pose:  # Check has_pose as boolean attribute
+            if not image.has_pose:
                 logger.warning(f"Image {image.name} has no pose, skipping")
                 continue
-            # Call projection_center() to get translation vector
-            try:
-                t = image.projection_center()
-            except Exception as e:
-                logger.warning(f"Failed to get projection_center for {image.name}: {str(e)}")
-                continue
-            # Call cam_from_world() to get pose (assuming it returns a 4x4 matrix or pose object)
-            try:
-                pose = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
-                if hasattr(pose, 'rotation'):  # Check if pose is an object with rotation attribute
-                    R = pose.rotation
-                else:  # Assume pose is a 4x4 matrix
-                    R = np.array(pose)[:3, :3] if isinstance(pose, (list, np.ndarray)) else pose[:3, :3]
-            except Exception as e:
-                logger.warning(f"Failed to get cam_from_world for {image.name}: {str(e)}")
-                continue
+            # Use projection_center for translation vector
+            t = image.projection_center()
+            # Use cam_from_world for pose
+            pose = image.cam_from_world
+            R = pose.rotation.matrix()  # Convert Rotation3d to 3x3 matrix
             poses.append((t, R))
             translations.append(t)
             image_ids.append(image_id)
