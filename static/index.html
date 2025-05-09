@@ -8,12 +8,50 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/loaders/PLYLoader.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        #progressContainer { width: 100%; background-color: #f3f3f3; }
-        #progressBar { transition: width 0.3s; }
-        #container { width: 100%; height: 600px; }
-        button, input { margin: 10px 0; }
-        #message, #timer { margin: 10px 0; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        #progressContainer {
+            width: 100%;
+            background-color: #333333;
+        }
+        #progressBar {
+            transition: width 0.3s;
+            background-color: #66bb6a;
+            height: 20px;
+        }
+        #container {
+            width: 100%;
+            height: 600px;
+            background-color: #000000;
+        }
+        button, input {
+            margin: 10px 0;
+            background-color: #333333;
+            color: #ffffff;
+            border: 1px solid #555555;
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+        button:hover, input:hover {
+            background-color: #444444;
+        }
+        input[type="file"] {
+            background-color: #222222;
+        }
+        #message, #timer {
+            margin: 10px 0;
+            color: #e0e0e0;
+        }
+        h2 {
+            color: #ffffff;
+        }
+        label {
+            color: #cccccc;
+        }
     </style>
 </head>
 <body>
@@ -26,7 +64,7 @@
     <br>
     <button id="processButton">Process Input</button>
     <div id="progressContainer" style="display: none;">
-        <div id="progressBar" style="width: 0%; background-color: #4CAF50; height: 20px;"></div>
+        <div id="progressBar" style="width: 0%; height: 20px;"></div>
     </div>
     <p id="message"></p>
     <p id="timer">Processing time: 00:00</p>
