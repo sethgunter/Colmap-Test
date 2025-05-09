@@ -437,7 +437,8 @@ def process_video():
             '--SiftExtraction.peak_threshold', '0.006',
             '--SiftExtraction.max_num_features', '12000',
             '--SiftExtraction.estimate_affine_shape', '1',
-            '--SiftExtraction.max_num_orientations', '3'
+            '--SiftExtraction.max_num_orientations', '3',
+            '--SiftExtraction.upright', '0'
             
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
@@ -470,7 +471,8 @@ def process_video():
             '--SequentialMatching.loop_detection_max_num_features', '8000',
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
-            '--SiftMatching.min_num_inliers', '30'
+            '--SiftMatching.min_num_inliers', '30',
+            '--SiftMatching.guided_matching', '1'
             
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
@@ -500,7 +502,7 @@ def process_video():
             '--Mapper.ba_refine_focal_length', '1',
             '--Mapper.ba_refine_principal_point', '1',
             '--Mapper.ba_refine_extra_params', '1',
-            '--Mapper.sphere_camera', '1'
+            '--Mapper.sphere_camera', '1',
             '--Mapper.ba_global_use_pba', '1',  # Use PBA for better optimization
             '--Mapper.ba_local_max_num_iterations', '100' # Increase local BA iterations
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
