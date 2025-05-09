@@ -18,7 +18,8 @@ import numpy as np
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
-app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))
+# Ensure consistent secret_key for session persistence
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'fixed-secret-key-for-testing')
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -253,11 +254,18 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
 def process_video():
     logger.debug("Received POST request to /process-video")
     logger.debug(f"Request files: {list(request.files.keys())}")
+    logger.debug(f"Incoming form data: {request.form}")
 
     # Initialize session and request ID
-    session_id = request.form.get('session_id', str(uuid.uuid4()))
+    session_id = request.form.get('session_id')
+    if not session_id or session_id.strip() == '':
+        session_id = str(uuid.uuid4())
+        logger.debug(f"Generated new session_id: {session_id}")
+    else:
+        logger.debug(f"Using provided session_id: {session_id}")
     request_id = session.get(f'request_id_{session_id}', str(uuid.uuid4()))
     session[f'request_id_{session_id}'] = request_id
+    logger.debug(f"Session state: request_id_{session_id} = {request_id}")
 
     # Define directories
     base_dir = os.path.join('/app/colmap_project', request_id)
@@ -306,6 +314,7 @@ def process_video():
 
     input_save_time = time.time()
     session[f'input_save_time_{session_id}'] = input_save_time
+    logger.debug(f"Stored input_save_time for session_id {session_id}: {input_save_time}")
     if is_video:
         # Handle video upload
         video = request.files['video']
@@ -554,10 +563,12 @@ def process_video():
 @app.route('/process-dense', methods=['POST'])
 def process_dense():
     logger.debug("Received POST request to /process-dense")
+    logger.debug(f"Incoming form data: {request.form}")
     session_id = request.form.get('session_id')
-    if not session_id:
-        logger.error("No session ID provided")
-        response = {"status": "error", "message": "No session ID provided"}
+    logger.debug(f"Incoming session_id: {session_id}")
+    if not session_id or session_id.strip() == '':
+        logger.error("No valid session ID provided")
+        response = {"status": "error", "message": "No valid session ID provided", "session_id": session_id or ""}
         logger.debug(f"Sending response: {response}")
         return response, 400
 

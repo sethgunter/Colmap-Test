@@ -46,6 +46,10 @@ async function processInput() {
             const formData = new FormData();
             formData.append('video', videoFile);
             formData.append('complete', 'true');
+            if (sessionId) {
+                formData.append('session_id', sessionId);
+            }
+            console.log('Sending video upload with session_id:', sessionId);
             result = await uploadData(formData, 1, 1);
             sessionId = result.session_id;
         } else {
@@ -56,16 +60,19 @@ async function processInput() {
             for (let i = 0; i < sortedImageFiles.length; i += chunkSize) {
                 const chunk = sortedImageFiles.slice(i, i + chunkSize);
                 const formData = new FormData();
-                formData.append('session_id', sessionId || '');
+                if (sessionId) {
+                    formData.append('session_id', sessionId);
+                }
                 chunk.forEach((file, index) => {
                     formData.append('images', file, `frame_${(i + index).toString().padStart(4, '0')}.jpg`);
                 });
                 if (i + chunkSize >= sortedImageFiles.length) {
                     formData.append('complete', 'true');
                 }
+                console.log(`Sending image chunk ${i + 1}-${Math.min(i + chunkSize, sortedImageFiles.length)} with session_id:`, sessionId);
                 message.textContent = `Uploading images ${i + 1} to ${Math.min(i + chunkSize, sortedImageFiles.length)}...`;
                 const chunkResult = await uploadData(formData, sortedImageFiles.length, i + chunkSize);
-                sessionId = chunkResult.session_id || sessionId;
+                sessionId = chunkResult.session_id;
                 result = chunkResult.status === 'sparse_success' ? chunkResult : result;
             }
         }
@@ -84,8 +91,12 @@ async function processInput() {
             xhr.responseType = 'json';
             return new Promise((resolve, reject) => {
                 xhr.onload = () => {
+                    console.log('Raw response:', xhr.response);
                     if (xhr.status >= 200 && xhr.status < 300) {
-                        console.log('Raw response:', xhr.response);
+                        if (!xhr.response.session_id) {
+                            console.error('Response missing session_id:', xhr.response);
+                            reject(new Error('Server did not provide a session ID'));
+                        }
                         resolve(xhr.response);
                     } else {
                         reject(new Error(`Server responded with status ${xhr.status}: ${xhr.response?.message || xhr.statusText}`));
@@ -100,10 +111,16 @@ async function processInput() {
             throw new Error(result?.message || 'Sparse reconstruction failed');
         }
 
+        if (!result.session_id) {
+            console.error('Sparse response missing session_id:', result);
+            throw new Error('Server did not provide a session ID');
+        }
+
         console.log('Sparse reconstruction response:', result);
+        sessionId = result.session_id;
         const inputSaveTime = result.input_save_time * 1000;
         if (!inputSaveTime) {
-            console.error('Input save time not provided by server');
+            console.error('Input save time not provided by server:', result);
             throw new Error('Server did not provide input save time');
         }
 
@@ -127,6 +144,12 @@ async function processInput() {
         };
 
         confirmButton.onclick = async () => {
+            if (!sessionId) {
+                console.error('Cannot start dense processing: sessionId is missing');
+                message.textContent = 'Error: Session ID missing';
+                return;
+            }
+
             confirmButton.disabled = true;
             message.textContent = 'Processing dense reconstruction...';
             progressBar.style.width = '75%';
@@ -134,6 +157,7 @@ async function processInput() {
             try {
                 const formData = new FormData();
                 formData.append('session_id', sessionId);
+                console.log('Sending dense request with session_id:', sessionId);
                 const denseResult = await fetch('/process-dense', {
                     method: 'POST',
                     body: formData
