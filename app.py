@@ -437,8 +437,8 @@ def process_video():
             '--SiftExtraction.peak_threshold', '0.004',
             '--SiftExtraction.max_num_features', '15000',
             '--SiftExtraction.estimate_affine_shape', '1',
-            '--SiftExtraction.max_num_orientations', '3',
-            '--SiftExtraction.upright', '0'
+            '--SiftExtraction.max_num_orientations', '3'
+            
             
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
@@ -459,20 +459,20 @@ def process_video():
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'sequential_matcher',
             '--database_path', database_path,
-            '--SequentialMatching.overlap', '8',
+            '--SequentialMatching.overlap', '7',
             '--SequentialMatching.quadratic_overlap', '0',
             '--SequentialMatching.loop_detection', '1',
             '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
-            '--SequentialMatching.loop_detection_period', '20',
+            '--SequentialMatching.loop_detection_period', '30',
             '--SequentialMatching.loop_detection_num_images', '30',
-            '--SequentialMatching.loop_detection_num_nearest_neighbors', '3',
+            '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
             '--SequentialMatching.loop_detection_num_checks', '256',
-            '--SequentialMatching.loop_detection_num_images_after_verification', '10',
+            '--SequentialMatching.loop_detection_num_images_after_verification', '6',
             '--SequentialMatching.loop_detection_max_num_features', '6000',
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
-            '--SiftMatching.min_num_inliers', '15',
-            '--SiftMatching.guided_matching', '1'
+            '--SiftMatching.min_num_inliers', '15'
+            #'--SiftMatching.guided_matching', '1'
             
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
@@ -495,13 +495,13 @@ def process_video():
             '--database_path', database_path,
             '--image_path', images_dir,
             '--output_path', sparse_dir,
-            '--Mapper.min_num_matches', '20',
-            '--Mapper.init_min_num_inliers', '30',
-            '--Mapper.ba_global_max_num_iterations', '50',
-            '--Mapper.multiple_models', '0',
-            '--Mapper.ba_refine_focal_length', '1',
-            '--Mapper.ba_refine_principal_point', '1',
-            '--Mapper.ba_refine_extra_params', '1',
+            '--Mapper.min_num_matches', '10',
+            '--Mapper.init_min_num_inliers', '15',
+            '--Mapper.ba_global_max_num_iterations', '30',
+            '--Mapper.multiple_models', '1',
+            '--Mapper.ba_refine_focal_length', '0',
+            '--Mapper.ba_refine_principal_point', '0',
+            '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1',
             '--Mapper.ba_local_max_num_iterations', '100' # Increase local BA iterations
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
