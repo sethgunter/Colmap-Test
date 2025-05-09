@@ -46,6 +46,7 @@ async function processInput() {
             formData.append('video', videoFile);
             formData.append('complete', 'true');
             result = await uploadData(formData, 1, 1);
+            sessionId = result.session_id;
         } else {
             const sortedImageFiles = Array.from(imageFiles).sort((a, b) =>
                 a.name.localeCompare(b.name, undefined, { numeric: true })
@@ -97,6 +98,10 @@ async function processInput() {
             throw new Error(result?.message || 'Server error');
         }
 
+        if (!result.session_id) {
+            throw new Error('Server did not provide a session ID');
+        }
+
         console.log('Server response received, starting timer');
         const inputSaveTime = result.input_save_time * 1000;
         if (!inputSaveTime) {
@@ -127,11 +132,15 @@ async function processInput() {
             message.textContent = 'Sparse reconstruction complete, processing dense model...';
             const pollInterval = setInterval(async () => {
                 try {
+                    const formData = new FormData();
+                    formData.append('session_id', sessionId);
                     const response = await fetch('/check-dense-status', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: `session_id=${encodeURIComponent(result.session_id)}`
+                        body: formData
                     });
+                    if (!response.ok) {
+                        throw new Error(`Failed to check dense status: ${response.statusText}`);
+                    }
                     const denseResult = await response.json();
 
                     if (denseResult.status === 'processing') {

@@ -15,7 +15,7 @@ import glob
 import plyfile
 import pycolmap
 import numpy as np
-from threading import Thread
+from threading import Thread, Lock
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
@@ -24,6 +24,10 @@ app.secret_key = os.getenv('FLASK_SECRET_KEY', str(uuid.uuid4()))
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+# Global storage for dense results
+dense_results = {}
+dense_results_lock = Lock()
 
 @app.after_request
 def add_security_headers(response: Response):
@@ -250,7 +254,7 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
 
     return True, ""
 
-def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_model_dir, images_dir, session_id):
+def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_model_dir, images_dir, session_id, input_save_time):
     """Perform dense reconstruction in a background thread."""
     try:
         dense_base_dir = os.path.join(base_dir, 'dense_chunks')
@@ -279,10 +283,11 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
             for img_name in chunk_image_names:
                 if not os.path.exists(os.path.join(chunk_image_dir, img_name)):
                     logger.error(f"Image missing in chunk {idx}: {img_name}")
-                    session[f'dense_result_{session_id}'] = {
-                        'status': 'error',
-                        'message': f"Image missing in chunk {idx}: {img_name}"
-                    }
+                    with dense_results_lock:
+                        dense_results[session_id] = {
+                            'status': 'error',
+                            'message': f"Image missing in chunk {idx}: {img_name}"
+                        }
                     return
 
             try:
@@ -334,17 +339,19 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
                     
                     if len(reconstruction.images) != len(chunk_image_names):
                         logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
-                        session[f'dense_result_{session_id}'] = {
-                            'status': 'error',
-                            'message': f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"
-                        }
+                        with dense_results_lock:
+                            dense_results[session_id] = {
+                                'status': 'error',
+                                'message': f"Chunk {idx} sparse model filtering failed: expected {len(chunk_image_names)} images, got {len(reconstruction.images)}"
+                            }
                         return
             except Exception as e:
                 logger.error(f"Failed to filter sparse model for chunk {idx}: {str(e)}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Failed to filter sparse model for chunk {idx}: {str(e)}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Failed to filter sparse model for chunk {idx}: {str(e)}"
+                    }
                 return
 
             try:
@@ -361,17 +368,19 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
                 stdout, stderr = process.communicate()
                 if process.returncode != 0:
                     logger.error(f"Undistortion failed for chunk {idx}: {stderr}")
-                    session[f'dense_result_{session_id}'] = {
-                        'status': 'error',
-                        'message': f"Undistortion failed for chunk {idx}: {stderr}"
-                    }
+                    with dense_results_lock:
+                        dense_results[session_id] = {
+                            'status': 'error',
+                            'message': f"Undistortion failed for chunk {idx}: {stderr}"
+                        }
                     return
             except subprocess.TimeoutExpired:
                 logger.error(f"Undistortion timed out for chunk {idx}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Undistortion timed out for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Undistortion timed out for chunk {idx}"
+                    }
                 return
 
             try:
@@ -391,53 +400,59 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
                 stdout, stderr = process.communicate()
                 if process.returncode != 0:
                     logger.error(f"Patch match failed for chunk {idx}: {stderr}")
-                    session[f'dense_result_{session_id}'] = {
-                        'status': 'error',
-                        'message': f"Patch match failed for chunk {idx}: {stderr}"
-                    }
+                    with dense_results_lock:
+                        dense_results[session_id] = {
+                            'status': 'error',
+                            'message': f"Patch match failed for chunk {idx}: {stderr}"
+                        }
                     return
             except subprocess.TimeoutExpired:
                 logger.error(f"Patch match timed out for chunk {idx}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Patch match timed out for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Patch match timed out for chunk {idx}"
+                    }
                 return
 
             depth_maps_dir = os.path.join(chunk_dir, 'stereo', 'depth_maps')
             if not os.path.exists(depth_maps_dir) or not os.listdir(depth_maps_dir):
                 logger.error(f"No depth maps for chunk {idx}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"No depth maps for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"No depth maps for chunk {idx}"
+                    }
                 return
 
             ram_ok, available_ram = check_ram_for_fusion()
             if not ram_ok:
                 logger.error(f"Insufficient RAM for chunk {idx}: {available_ram}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': available_ram
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': available_ram
+                    }
                 return
             gpus = GPUtil.getGPUs()
             free_memory_mb = gpus[0].memoryFree if gpus else 0
             if free_memory_mb < 3000:
                 logger.error(f"Insufficient GPU memory for chunk {idx}: {free_memory_mb} MB")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Insufficient GPU memory for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Insufficient GPU memory for chunk {idx}"
+                    }
                 return
             disk = shutil.disk_usage('/app')
             free_gb = disk.free / (1024**3)
             if free_gb < 1:
                 logger.error(f"Insufficient disk space for chunk {idx}: {free_gb:.2f} GB")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Insufficient disk space for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Insufficient disk space for chunk {idx}"
+                    }
                 return
             logger.debug(f"Resources for chunk {idx}: RAM={available_ram} MB, GPU={free_memory_mb} MB, Disk={free_gb} GB")
             cache_size = min(4, max(1, int((available_ram / 1024) * 0.5)))
@@ -466,32 +481,36 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
                     logger.debug(f"stdout content: {repr(stdout)}")
                     for handler in logger.handlers:
                         handler.flush()
-                    session[f'dense_result_{session_id}'] = {
-                        'status': 'error',
-                        'message': f"Stereo fusion failed for chunk {idx}: {stderr}"
-                    }
+                    with dense_results_lock:
+                        dense_results[session_id] = {
+                            'status': 'error',
+                            'message': f"Stereo fusion failed for chunk {idx}: {stderr}"
+                        }
                     return
             except subprocess.TimeoutExpired:
                 logger.error(f"Stereo fusion timed out for chunk {idx}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Stereo fusion timed out for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Stereo fusion timed out for chunk {idx}"
+                    }
                 return
             except Exception as e:
                 logger.error(f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}"
+                    }
                 return
 
             if not os.path.exists(partial_ply):
                 logger.error(f"No dense point cloud for chunk {idx}")
-                session[f'dense_result_{session_id}'] = {
-                    'status': 'error',
-                    'message': f"No dense point cloud for chunk {idx}"
-                }
+                with dense_results_lock:
+                    dense_results[session_id] = {
+                        'status': 'error',
+                        'message': f"No dense point cloud for chunk {idx}"
+                    }
                 return
             partial_ply_files.append(partial_ply)
 
@@ -504,10 +523,11 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
             os.chmod(output_dense_ply, 0o644)
         except Exception as e:
             logger.error(f"Failed to merge point clouds: {str(e)}")
-            session[f'dense_result_{session_id}'] = {
-                'status': 'error',
-                'message': f"Failed to merge point clouds: {str(e)}"
-            }
+            with dense_results_lock:
+                dense_results[session_id] = {
+                    'status': 'error',
+                    'message': f"Failed to merge point clouds: {str(e)}"
+                }
             return
 
         zip_buffer = io.BytesIO()
@@ -524,21 +544,23 @@ def perform_dense_processing(request_id, base_dir, sparse_cubic_dir, sparse_mode
         with open(zip_temp_path, 'wb') as f:
             f.write(zip_buffer.getvalue())
 
-        session[f'dense_result_{session_id}'] = {
-            'status': 'success',
-            'message': 'Processing complete',
-            'sparse_ply_path': f'/output/{request_id}/sparse.ply',
-            'dense_ply_path': f'/output/{request_id}/dense.ply',
-            'poses_path': f'/output/{request_id}/camera_poses.json',
-            'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
-            'input_save_time': session.get(f'input_save_time_{session_id}')
-        }
+        with dense_results_lock:
+            dense_results[session_id] = {
+                'status': 'success',
+                'message': 'Processing complete',
+                'sparse_ply_path': f'/output/{request_id}/sparse.ply',
+                'dense_ply_path': f'/output/{request_id}/dense.ply',
+                'poses_path': f'/output/{request_id}/camera_poses.json',
+                'zip_path': f'/output/{request_id}/reconstruction_bundle.zip',
+                'input_save_time': input_save_time
+            }
     except Exception as e:
         logger.error(f"Dense processing failed: {str(e)}")
-        session[f'dense_result_{session_id}'] = {
-            'status': 'error',
-            'message': f"Dense processing failed: {str(e)}"
-        }
+        with dense_results_lock:
+            dense_results[session_id] = {
+                'status': 'error',
+                'message': f"Dense processing failed: {str(e)}"
+            }
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
@@ -764,7 +786,7 @@ def process_video():
     try:
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1016x760x24',
             'colmap', 'sphere_cubic_reprojecer',
             '--image_path', images_dir,
             '--input_path', sparse_model_dir,
@@ -786,7 +808,7 @@ def process_video():
         return {"status": "error", "message": error_message}, 500
 
     # Start dense processing in a background thread
-    dense_thread = Thread(target=perform_dense_processing, args=(request_id, base_dir, sparse_cubic_dir, sparse_model_dir, images_dir, session_id))
+    dense_thread = Thread(target=perform_dense_processing, args=(request_id, base_dir, sparse_cubic_dir, sparse_model_dir, images_dir, session_id, input_save_time))
     dense_thread.start()
 
     return {
@@ -802,13 +824,16 @@ def process_video():
 def check_dense_status():
     session_id = request.form.get('session_id')
     if not session_id:
+        logger.error("No session ID provided in check-dense-status")
         return {"status": "error", "message": "No session ID provided"}, 400
 
-    dense_result = session.get(f'dense_result_{session_id}')
-    if not dense_result:
-        return {"status": "processing", "message": "Dense reconstruction still in progress"}, 200
-
-    return dense_result, 200
+    with dense_results_lock:
+        dense_result = dense_results.get(session_id)
+        if not dense_result:
+            return {"status": "processing", "message": "Dense reconstruction still in progress"}, 200
+        # Clean up result to prevent memory leak
+        dense_results.pop(session_id, None)
+        return dense_result, 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
