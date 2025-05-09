@@ -528,7 +528,7 @@ def process_video():
         image_names = []
         translations = []
         for image_id, image in reconstruction.images.items():
-            if not image.has_pose():
+            if not image.has_pose:
                 logger.warning(f"Image {image.name} has no pose, skipping")
                 continue
             # Use projection_center for translation vector
