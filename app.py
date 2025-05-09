@@ -471,12 +471,12 @@ def process_video():
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
             '--SiftMatching.min_num_inliers', '30'
-            '--SiftMatching.guided_matching', '1'
+            
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Feature matching failed: {stderr}")
-            response = {"status": "error", "message": f"Feature matching failed: {stderr}", "session_id": session_id}
+            response = {"status": "error", "message": f"Feature matching failed: {stderr} {stdout}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
     except subprocess.TimeoutExpired:
