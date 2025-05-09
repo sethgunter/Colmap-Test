@@ -507,7 +507,7 @@ def process_video():
         stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Sparse reconstruction failed: {stderr}")
-            response = {"status": "error", "message": f"Sparse reconstruction failed: {stderr}", "session_id": session_id}
+            response = {"status": "error", "message": f"Sparse reconstruction failed: {stderr} {stdout}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
     except subprocess.TimeoutExpired:
@@ -535,7 +535,7 @@ def process_video():
         stdout, stderr = process.communicate()
         if process.returncode != 0:
             logger.error(f"Cubic reprojection failed: {stderr}")
-            response = {"status": "error", "message": f"Cubic reprojection failed: {stderr}", "session_id": session_id}
+            response = {"status": "error", "message": f"Cubic reprojection failed: {stderr} {stdout}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
     except subprocess.TimeoutExpired:
