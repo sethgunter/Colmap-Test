@@ -1,6 +1,7 @@
 const videoInput = document.getElementById('videoInput');
 const imagesInput = document.getElementById('imagesInput');
 const processButton = document.getElementById('processButton');
+const confirmButton = document.getElementById('confirmButton');
 const message = document.getElementById('message');
 const viewDenseButton = document.getElementById('viewDenseButton');
 const viewSparseButton = document.getElementById('viewSparseButton');
@@ -65,7 +66,7 @@ async function processInput() {
                 message.textContent = `Uploading images ${i + 1} to ${Math.min(i + chunkSize, sortedImageFiles.length)}...`;
                 const chunkResult = await uploadData(formData, sortedImageFiles.length, i + chunkSize);
                 sessionId = chunkResult.session_id || sessionId;
-                result = chunkResult.status === 'sparse_success' || chunkResult.status === 'success' ? chunkResult : result;
+                result = chunkResult.status === 'sparse_success' ? chunkResult : result;
             }
         }
 
@@ -84,6 +85,7 @@ async function processInput() {
             return new Promise((resolve, reject) => {
                 xhr.onload = () => {
                     if (xhr.status >= 200 && xhr.status < 300) {
+                        console.log('Raw response:', xhr.response);
                         resolve(xhr.response);
                     } else {
                         reject(new Error(`Server responded with status ${xhr.status}: ${xhr.response?.message || xhr.statusText}`));
@@ -94,15 +96,11 @@ async function processInput() {
             });
         }
 
-        if (!result || (result.status !== 'sparse_success' && result.status !== 'success')) {
-            throw new Error(result?.message || 'Server error');
+        if (!result || result.status !== 'sparse_success') {
+            throw new Error(result?.message || 'Sparse reconstruction failed');
         }
 
-        if (!result.session_id) {
-            throw new Error('Server did not provide a session ID');
-        }
-
-        console.log('Server response received, starting timer');
+        console.log('Sparse reconstruction response:', result);
         const inputSaveTime = result.input_save_time * 1000;
         if (!inputSaveTime) {
             console.error('Input save time not provided by server');
@@ -117,114 +115,82 @@ async function processInput() {
             timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
         }, 1000);
 
-        message.textContent = 'Sparse reconstruction complete';
+        message.textContent = 'Sparse reconstruction complete. Click Confirm to proceed with dense processing.';
         progressBar.style.width = '50%';
         viewSparseButton.style.display = 'block';
+        confirmButton.style.display = 'block';
 
         viewSparseButton.onclick = () => {
             container.style.display = 'block';
             initThreeJS(result.sparse_ply_path, result.poses_path);
-            message.textContent = 'Sparse model displayed';
+            message.textContent = 'Sparse model displayed. Click Confirm to proceed with dense processing.';
         };
 
-        // Poll for dense reconstruction status
-        if (result.status === 'sparse_success') {
-            message.textContent = 'Sparse reconstruction complete, processing dense model...';
-            const pollInterval = setInterval(async () => {
-                try {
-                    const formData = new FormData();
-                    formData.append('session_id', sessionId);
-                    const response = await fetch('/check-dense-status', {
-                        method: 'POST',
-                        body: formData
-                    });
+        confirmButton.onclick = async () => {
+            confirmButton.disabled = true;
+            message.textContent = 'Processing dense reconstruction...';
+            progressBar.style.width = '75%';
+
+            try {
+                const formData = new FormData();
+                formData.append('session_id', sessionId);
+                const denseResult = await fetch('/process-dense', {
+                    method: 'POST',
+                    body: formData
+                }).then(response => {
                     if (!response.ok) {
-                        throw new Error(`Failed to check dense status: ${response.statusText}`);
+                        throw new Error(`Dense processing failed: ${response.statusText}`);
                     }
-                    const denseResult = await response.json();
+                    return response.json();
+                });
 
-                    if (denseResult.status === 'processing') {
-                        return; // Continue polling
-                    }
-
-                    clearInterval(pollInterval);
-                    if (denseResult.status === 'success') {
-                        message.textContent = 'Dense reconstruction complete';
-                        progressBar.style.width = '100%';
-                        viewDenseButton.style.display = 'block';
-                        downloadButton.style.display = 'block';
-
-                        viewDenseButton.onclick = () => {
-                            container.style.display = 'block';
-                            initThreeJS(denseResult.dense_ply_path, denseResult.poses_path);
-                            message.textContent = 'Dense model displayed';
-                        };
-
-                        downloadButton.onclick = () => {
-                            const zipLink = document.createElement('a');
-                            zipLink.href = denseResult.zip_path;
-                            zipLink.download = 'reconstruction_bundle.zip';
-                            zipLink.click();
-                            message.textContent = 'Download started';
-                        };
-
-                        if (timerInterval) {
-                            clearInterval(timerInterval);
-                            const elapsedMs = Date.now() - inputSaveTime;
-                            const elapsed = Math.floor(elapsedMs / 1000);
-                            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
-                            const seconds = (elapsed % 60).toString().padStart(2, '0');
-                            timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
-                        }
-                    } else {
-                        throw new Error(denseResult.message || 'Dense reconstruction failed');
-                    }
-                } catch (error) {
-                    console.error('Dense status check error:', error);
-                    message.textContent = `Error: ${error.message}`;
-                    clearInterval(pollInterval);
-                    if (timerInterval) {
-                        clearInterval(timerInterval);
-                        timerDisplay.textContent = 'Processing time: stopped due to error';
-                    }
+                console.log('Dense reconstruction response:', denseResult);
+                if (denseResult.status !== 'success') {
+                    throw new Error(denseResult.message || 'Dense reconstruction failed');
                 }
-            }, 5000); // Poll every 5 seconds
-        } else {
-            // If dense reconstruction is already complete
-            message.textContent = 'Processing complete';
-            progressBar.style.width = '100%';
-            viewDenseButton.style.display = 'block';
-            viewSparseButton.style.display = 'block';
-            downloadButton.style.display = 'block';
 
-            if (timerInterval) {
-                clearInterval(timerInterval);
-                const elapsedMs = Date.now() - inputSaveTime;
-                const elapsed = Math.floor(elapsedMs / 1000);
-                const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
-                const seconds = (elapsed % 60).toString().padStart(2, '0');
-                timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+                message.textContent = 'Dense reconstruction complete';
+                progressBar.style.width = '100%';
+                viewDenseButton.style.display = 'block';
+                downloadButton.style.display = 'block';
+
+                viewDenseButton.onclick = () => {
+                    container.style.display = 'block';
+                    initThreeJS(denseResult.dense_ply_path, denseResult.poses_path);
+                    message.textContent = 'Dense model displayed';
+                };
+
+                downloadButton.onclick = () => {
+                    const zipLink = document.createElement('a');
+                    zipLink.href = denseResult.zip_path;
+                    zipLink.download = 'reconstruction_bundle.zip';
+                    zipLink.click();
+                    message.textContent = 'Download started';
+                };
+
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    const elapsedMs = Date.now() - inputSaveTime;
+                    const elapsed = Math.floor(elapsedMs / 1000);
+                    const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+                    const seconds = (elapsed % 60).toString().padStart(2, '0');
+                    timerDisplay.textContent = `Processing time: ${minutes}:${seconds}`;
+                }
+            } catch (error) {
+                console.error('Dense processing error:', error);
+                message.textContent = `Error: ${error.message}`;
+                if (timerInterval) {
+                    clearInterval(timerInterval);
+                    timerDisplay.textContent = 'Processing time: stopped due to error';
+                }
+            } finally {
+                confirmButton.disabled = false;
             }
-
-            viewDenseButton.onclick = () => {
-                container.style.display = 'block';
-                initThreeJS(result.dense_ply_path, result.poses_path);
-                message.textContent = 'Dense model displayed';
-            };
-
-            downloadButton.onclick = () => {
-                const zipLink = document.createElement('a');
-                zipLink.href = result.zip_path;
-                zipLink.download = 'reconstruction_bundle.zip';
-                zipLink.click();
-                message.textContent = 'Download started';
-            };
-        }
+        };
     } catch (error) {
-        console.error('Processing error:', error);
+        console.error('Sparse processing error:', error);
         message.textContent = `Error: ${error.message}`;
         if (timerInterval) {
-            console.log('Error occurred, stopping timer');
             clearInterval(timerInterval);
             timerDisplay.textContent = 'Processing time: stopped due to error';
         }
