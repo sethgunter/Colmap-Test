@@ -497,7 +497,7 @@ def process_video():
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
             'colmap', 'sequential_matcher',
             '--database_path', database_path,
-            '--SequentialMatching.overlap', '2',
+            '--SequentialMatching.overlap', '4',
             '--SequentialMatching.quadratic_overlap', '0',
             '--SequentialMatching.loop_detection', '1',
             '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
@@ -509,7 +509,7 @@ def process_video():
             '--SequentialMatching.loop_detection_max_num_features', '-1',
             '--SiftMatching.use_gpu', '1',
             '--SiftMatching.gpu_index', '0',
-            '--SiftMatching.min_num_inliers', '30'
+            '--SiftMatching.min_num_inliers', '10'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
