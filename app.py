@@ -466,7 +466,7 @@ def process_video():
             '--ImageReader.single_camera', '1',
             '--SiftExtraction.use_gpu', '1',
             '--SiftExtraction.gpu_index', '0',
-            '--SiftExtraction.peak_threshold', '0.0001',
+            '--SiftExtraction.peak_threshold', '0.00001',
             '--SiftExtraction.max_num_features', '13000',
             '--SiftExtraction.estimate_affine_shape', '0',
             '--SiftExtraction.max_num_orientations', '3'
@@ -524,6 +524,7 @@ def process_video():
         return response, 500
 
     try:
+        logger.debug(f"Matching finished with : {stdout}")
         logger.debug("Running sparse reconstruction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -560,7 +561,8 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    try:
+    try: 
+        logger.debug(f"Sparse finished with : {stdout}")
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
