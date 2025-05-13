@@ -462,12 +462,12 @@ def process_video():
             '--database_path', database_path,
             '--image_path', images_dir,
             '--ImageReader.camera_model', 'SPHERE',
-            '--ImageReader.camera_params', '1,1920,960',
+            '--ImageReader.camera_params', '1,3520,1760',
             '--ImageReader.single_camera', '1',
-            '--SiftExtraction.use_gpu', '1',
+            '--SiftExtraction.use_gpu', '1'
             # '--SiftExtraction.gpu_index', '0',
-            '--SiftExtraction.peak_threshold', '0.00001',
-            '--SiftExtraction.max_num_features', '13000'
+            # '--SiftExtraction.peak_threshold', '0.00001',
+            # '--SiftExtraction.max_num_features', '13000'
             # '--SiftExtraction.estimate_affine_shape', '0',
             # '--SiftExtraction.max_num_orientations', '3'
         ]
@@ -501,7 +501,7 @@ def process_video():
             # '--SequentialMatching.quadratic_overlap', '0',
             '--SequentialMatching.loop_detection', '1',
             '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
-            # '--SequentialMatching.loop_detection_period', '40',
+            '--SequentialMatching.loop_detection_period', '40',
             # '--SequentialMatching.loop_detection_num_images', '50',
             # '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
             # '--SequentialMatching.loop_detection_num_checks', '512',
@@ -535,7 +535,7 @@ def process_video():
             # '--Mapper.min_num_matches', '10',
             # '--Mapper.init_min_num_inliers', '30',
             # '--Mapper.ba_global_max_num_iterations', '70',
-            '--Mapper.multiple_models', '1',
+            # '--Mapper.multiple_models', '1',
             '--Mapper.ba_refine_focal_length', '0',
             '--Mapper.ba_refine_principal_point', '0',
             '--Mapper.ba_refine_extra_params', '0',
