@@ -264,8 +264,8 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
     # Initialize SuperGlue
     superglue_config = {
         'weights_path': '/app/superpoint_superglue/models/weights/superglue_indoor.pth',
-        'sinkhorn_iterations': 20,
-        'match_threshold': 0.2
+        'sinkhorn_iterations': 50,  # Increased to improve match convergence
+        'match_threshold': 0.1     # Lowered to allow more matches
     }
     superglue_model = SuperGlue(superglue_config).eval().to(device)
     logger.debug(f"SuperGlue config: {superglue_config}")
@@ -745,7 +745,11 @@ def process_video():
             '--Mapper.ba_refine_focal_length', '0',
             '--Mapper.ba_refine_principal_point', '0',
             '--Mapper.ba_refine_extra_params', '0',
-            '--Mapper.sphere_camera', '1'
+            '--Mapper.sphere_camera', '1',
+            '--Mapper.min_num_matches', '10',
+            '--Mapper.init_min_num_inliers', '50',
+            '--Mapper.init_min_tri_angle', '4',
+            '--Mapper.max_num_models', '10'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
