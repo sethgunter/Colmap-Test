@@ -19,6 +19,7 @@ import cv2
 import torch
 import sqlite3
 from pathlib import Path
+import py360convert  # For equirectangular to perspective conversion
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
@@ -125,7 +126,7 @@ def check_resources(current_request_id):
         disk = shutil.disk_usage('/app')
         free_gb = disk.free / (1024**3)
         logger.debug(f"Disk space free: {free_gb:.2f} GB")
-        if free_gb < 5:
+        if free_gb < 8:
             logger.error(f"Low disk space: {free_gb:.2f} GB available")
             return False, f"Low disk space: {free_gb:.2f} GB available"
         gpus = GPUtil.getGPUs()
@@ -135,12 +136,12 @@ def check_resources(current_request_id):
         gpu = gpus[0]
         free_memory_mb = gpu.memoryFree
         logger.debug(f"GPU memory free: {free_memory_mb} MB")
-        if free_memory_mb < 10000:
+        if free_memory_mb < 12000:
             logger.error(f"Insufficient GPU memory: {free_memory_mb} MB available")
             return False, f"Insufficient GPU memory: {free_memory_mb} MB available"
         available_ram = psutil.virtual_memory().available / (1024 ** 2)
         logger.debug(f"Available RAM: {available_ram} MB")
-        if available_ram < 20000:
+        if available_ram < 10000:
             logger.error(f"Insufficient RAM: {available_ram} MB available")
             return False, f"Insufficient RAM: {available_ram} MB available"
         return True, ""
@@ -156,9 +157,13 @@ def check_ram_for_fusion():
         free_memory_mb = gpu.memoryFree
     else:
         logger.warning("No GPU detected before stereo fusion")
-    if available_ram < 8000:
+        free_memory_mb = 0
+    if available_ram < 10000:
         logger.error(f"Insufficient RAM for stereo fusion: {available_ram} MB available")
         return False, f"Insufficient RAM for fusion: {available_ram} MB available"
+    if free_memory_mb < 8000:
+        logger.error(f"Insufficient GPU memory for stereo fusion: {free_memory_mb} MB available")
+        return False, f"Insufficient GPU memory for fusion: {free_memory_mb} MB available"
     return True, available_ram
 
 def merge_ply_files(ply_files, output_path):
@@ -233,304 +238,201 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-# Note: Only the run_superpoint_superglue function is shown.
-# Replace this function in your existing app.py, keeping all other code unchanged.
-
-# Note: Only run_superpoint_superglue and run_sparse_reconstruction are shown.
-# Replace these functions in your app.py, keeping other code unchanged.
-
-def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
-    """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching."""
+def split_equirectangular_image(image_path, output_dir, num_views=8, fov_deg=50, output_size=960):
+    """Split an equirectangular image into perspective images."""
     try:
-        from superpoint_superglue.models.superpoint import SuperPoint
-        from superpoint_superglue.models.superglue import SuperGlue
-        import pycolmap
-        import sqlite3
-        import numpy as np
+        img = cv2.imread(image_path)
+        if img is None:
+            logger.error(f"Failed to load image: {image_path}")
+            return False, []
+        h, w = img.shape[:2]
+        if w != 2 * h:
+            logger.warning(f"Image {image_path} is not 2:1 aspect ratio ({w}x{h})")
+        # Convert to perspective images
+        output_paths = []
+        for i in range(num_views):
+            yaw = (360.0 / num_views) * i
+            perspective_img = py360convert.e2p(
+                img,
+                fov_deg=(fov_deg, fov_deg),
+                u_deg=yaw,
+                v_deg=0,
+                out_hw=(output_size, output_size)
+            )
+            output_path = os.path.join(
+                output_dir,
+                f"{os.path.splitext(os.path.basename(image_path))[0]}_view_{i}.jpg"
+            )
+            cv2.imwrite(output_path, perspective_img)
+            output_paths.append(output_path)
+            logger.debug(f"Generated perspective image: {output_path}")
+        return True, output_paths
+    except Exception as e:
+        logger.error(f"Failed to split equirectangular image {image_path}: {str(e)}")
+        return False, []
+
+def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, output_size=960):
+    """Split an equirectangular mask into perspective masks."""
+    try:
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            logger.error(f"Failed to load mask: {mask_path}")
+            return False, []
+        h, w = mask.shape
+        if w != 2 * h:
+            logger.warning(f"Mask {mask_path} is not 2:1 aspect ratio ({w}x{h})")
+        # Convert to perspective masks
+        output_paths = []
+        for i in range(num_views):
+            yaw = (360.0 / num_views) * i
+            perspective_mask = py360convert.e2p(
+                mask,
+                fov_deg=(fov_deg, fov_deg),
+                u_deg=yaw,
+                v_deg=0,
+                out_hw=(output_size, output_size)
+            )
+            # Ensure binary mask (0 or 255)
+            perspective_mask = (perspective_mask > 0).astype(np.uint8) * 255
+            output_path = os.path.join(
+                output_dir,
+                f"{os.path.splitext(os.path.basename(mask_path))[0]}_view_{i}.png"
+            )
+            cv2.imwrite(output_path, perspective_mask)
+            output_paths.append(output_path)
+            logger.debug(f"Generated perspective mask: {output_path}")
+        return True, output_paths
+    except Exception as e:
+        logger.error(f"Failed to split equirectangular mask {mask_path}: {str(e)}")
+        return False, []
+
+def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir=None):
+    """Run HLoc with SuperPoint+SuperGlue for feature extraction and matching."""
+    try:
+        from hloc import extract_features, match_features, pairs_from_sequence, reconstruction
+        from hloc.utils import base_model
     except ImportError as e:
-        logger.error(f"Failed to import SuperPoint/SuperGlue or pycolmap: {str(e)}")
-        return False, f"Import failed: {str(e)}"
+        logger.error(f"Failed to import HLoc: {str(e)}")
+        return False, f"HLoc import failed: {str(e)}"
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.debug(f"Using device: {device}")
 
-    # Initialize SuperPoint
-    superpoint_config = {
-        'nms_radius': 4,
-        'keypoint_threshold': 0.005,
-        'max_keypoints': 1000,  # Balanced for memory and match count
-        'weight_path': '/app/superpoint_superglue/models/weights/superpoint_v1.pth'
+    # Load mapping of equirectangular to perspective images and masks
+    with open(mapping_json_path, 'r') as f:
+        eq_to_persp = json.load(f)
+    logger.debug(f"Loaded mapping with {len(eq_to_persp)} equirectangular images")
+
+    # Configure SuperPoint
+    superpoint_conf = {
+        'model': {
+            'name': 'superpoint',
+            'nms_radius': 4,
+            'keypoint_threshold': 0.005,
+            'max_keypoints': 1000
+        },
+        'preprocessing': {
+            'grayscale': True,
+            'resize_max': 960
+        },
+        'output_dir': os.path.join(output_dir, 'features')
     }
-    superpoint_model = SuperPoint(superpoint_config).eval().to(device)
-    logger.debug(f"SuperPoint config: {superpoint_config}")
+    logger.debug(f"SuperPoint config: {superpoint_conf}")
 
-    # Initialize SuperGlue
-    superglue_config = {
-        'weights_path': '/app/superpoint_superglue/models/weights/superglue_indoor.pth',
-        'sinkhorn_iterations': 50,  # Increased for better convergence
-        'match_threshold': 0.1     # Lowered to allow more matches
+    # Configure SuperGlue
+    superglue_conf = {
+        'model': {
+            'name': 'superglue',
+            'weights': 'indoor',
+            'sinkhorn_iterations': 50,
+            'match_threshold': 0.1
+        },
+        'output_dir': os.path.join(output_dir, 'matches')
     }
-    superglue_model = SuperGlue(superglue_config).eval().to(device)
-    logger.debug(f"SuperGlue config: {superglue_config}")
+    logger.debug(f"SuperGlue config: {superglue_conf}")
 
-    # Load images and optional masks
-    image_files = sorted(glob.glob(os.path.join(images_dir, '*')))
-    if not image_files:
-        logger.error("No images found in images_dir")
-        return False, "No images found"
-    logger.debug(f"Found {len(image_files)} images: {image_files[:5]}...")
-
-    mask_files = sorted(glob.glob(os.path.join(masks_dir, '*'))) if masks_dir and os.path.exists(masks_dir) else []
-    use_masks = len(mask_files) > 0
-    if use_masks and len(mask_files) != len(image_files):
-        logger.warning(f"Mismatch: {len(mask_files)} masks vs {len(image_files)} images")
-        use_masks = False
-    logger.debug(f"Found {len(mask_files)} masks, use_masks: {use_masks}")
-
-    # Create feature directory
-    feature_dir = os.path.join(os.path.dirname(database_path), 'features')
-    os.makedirs(feature_dir, exist_ok=True)
-    logger.debug(f"Created feature directory: {feature_dir}")
-
-    # Process images with SuperPoint
-    keypoints_dict = {}
-    descriptors_dict = {}
-    image_sizes = {}
-    images_data = {}
-    for img_path in image_files:
-        img_name = os.path.basename(img_path)
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            logger.error(f"Failed to load image: {img_path}")
-            continue
-        img_height, img_width = img.shape
-        image_sizes[img_name] = (img_width, img_height)
-        images_data[img_name] = img
-        logger.debug(f"Loaded image {img_name} with shape: ({img_height}, {img_width})")
-
-        # Apply mask if available
-        mask = None
-        if use_masks:
-            mask_path = os.path.join(masks_dir, img_name.replace('.jpg', '.png'))
-            if os.path.exists(mask_path):
-                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-                if mask.shape != img.shape:
-                    logger.warning(f"Mask size mismatch for {img_name}, ignoring mask")
-                    mask = None
-                else:
-                    mask = (mask > 0).astype(np.uint8)
-            logger.debug(f"Mask for {img_name}: {'applied' if mask is not None else 'not applied'}")
-
-        # Prepare image for SuperPoint
-        img_tensor = torch.from_numpy(img / 255.0).float()[None, None].to(device)
-        logger.debug(f"Image tensor shape for {img_name}: {list(img_tensor.shape)}")
-        if mask is not None:
-            mask_tensor = torch.from_numpy(mask).float()[None, None].to(device)
-            logger.debug(f"Mask tensor shape for {img_name}: {list(mask_tensor.shape)}")
-        else:
-            mask_tensor = None
-
-        # Run SuperPoint
-        with torch.no_grad():
-            pred = superpoint_model({'image': img_tensor})
-            keypoints = pred['keypoints'][0].cpu().numpy()
-            scores = pred['scores'][0].cpu().numpy()
-            descriptors = pred['descriptors'][0].cpu().numpy()  # Shape: [256, num_keypoints]
-            logger.debug(f"SuperPoint output for {img_name}: keypoints shape {keypoints.shape}, scores shape {scores.shape}, descriptors shape {descriptors.shape}")
-
-        if mask is not None:
-            # Filter keypoints by mask
-            mask_np = mask_tensor[0, 0].cpu().numpy()
-            valid = []
-            for kp in keypoints:
-                x, y = int(kp[0]), int(kp[1])
-                if 0 <= x < mask_np.shape[1] and 0 <= y < mask_np.shape[0] and mask_np[y, x] > 0:
-                    valid.append(True)
-                else:
-                    valid.append(False)
-            valid = np.array(valid)
-            keypoints = keypoints[valid]
-            scores = scores[valid]
-            descriptors = descriptors[:, valid]  # Shape: [256, num_valid_keypoints]
-            logger.debug(f"After mask filtering for {img_name}: keypoints shape {keypoints.shape}, scores shape {scores.shape}, descriptors shape {descriptors.shape}")
-
-        # Store results
-        keypoints_dict[img_name] = np.hstack([keypoints, scores[:, None]])
-        descriptors_dict[img_name] = descriptors
-        logger.debug(f"Stored {len(keypoints)} keypoints for {img_name}")
-
-    # Initialize database using COLMAP CLI
+    # Extract features
+    feature_path = os.path.join(output_dir, 'features', 'superpoint.h5')
+    os.makedirs(os.path.dirname(feature_path), exist_ok=True)
     try:
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'database_creator',
-            '--database_path', database_path
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=60)
-        if process.returncode != 0:
-            logger.error(f"Database creation failed: {stderr}")
-            return False, f"Database creation failed: {stderr}"
-        logger.debug(f"Database creation output: {stdout}")
-    except subprocess.TimeoutExpired:
-        logger.error("Database creation timed out")
-        return False, "Database creation timed out"
-
-    # Add data to database using SQLite
-    try:
-        conn = sqlite3.connect(database_path)
-        cursor = conn.cursor()
-
-        # Add camera (SPHERE model, ID 11)
-        camera_model = 11  # SPHERE model ID (per camera_models.h)
-        width = 1920
-        height = 960
-        prior_focal_length = 1.0  # Fixed for SPHERE model
-        params = np.array([1.0, width / 2.0, height / 2.0], dtype=np.float64).tobytes()  # f=1.0, cx=width/2, cy=height/2
-        cursor.execute(
-            "INSERT INTO cameras (model, width, height, params, prior_focal_length) VALUES (?, ?, ?, ?, ?)",
-            (camera_model, width, height, params, prior_focal_length)
+        extract_features.main(
+            conf=superpoint_conf,
+            image_dir=Path(images_dir),
+            export_dir=Path(os.path.dirname(feature_path)),
+            device=device,
+            mask_path=Path(masks_dir) if masks_dir and os.path.exists(masks_dir) else None
         )
-        camera_id = cursor.lastrowid
-        logger.debug(f"Added camera ID: {camera_id}")
-
-        # Add images
-        image_id_map = {}
-        for img_path in image_files:
-            img_name = os.path.basename(img_path)
-            cursor.execute(
-                "INSERT INTO images (name, camera_id) VALUES (?, ?)",
-                (img_name, camera_id)
-            )
-            image_id = cursor.lastrowid
-            image_id_map[img_name] = image_id
-            logger.debug(f"Added image {img_name} with ID {image_id}")
-
-        # Perform SuperGlue matching (sequential pairs)
-        matches_dict = {}
-        overlap = 3  # Increased to generate more pairs
-        sequential_pairs = []
-        for i in range(len(image_files) - 1):
-            img1_name = os.path.basename(image_files[i])
-            for j in range(i + 1, min(i + overlap + 1, len(image_files))):
-                img2_name = os.path.basename(image_files[j])
-                sequential_pairs.append((img1_name, img2_name))
-        logger.debug(f"Generated {len(sequential_pairs)} sequential pairs: {sequential_pairs[:5]}...")
-
-        for img1_name, img2_name in sequential_pairs:
-            if img1_name not in keypoints_dict or img2_name not in keypoints_dict:
-                logger.warning(f"Skipping pair {img1_name}, {img2_name}: missing keypoints")
-                continue
-
-            try:
-                kp1 = torch.from_numpy(keypoints_dict[img1_name][:, :2]).float().to(device)[None]
-                scores1 = torch.from_numpy(keypoints_dict[img1_name][:, 2]).float().to(device)[None]
-                desc1 = torch.from_numpy(descriptors_dict[img1_name]).float().to(device).unsqueeze(0)  # Shape: [1, 256, num_keypoints]
-                kp2 = torch.from_numpy(keypoints_dict[img2_name][:, :2]).float().to(device)[None]
-                scores2 = torch.from_numpy(keypoints_dict[img2_name][:, 2]).float().to(device)[None]
-                desc2 = torch.from_numpy(descriptors_dict[img2_name]).float().to(device).unsqueeze(0)  # Shape: [1, 256, num_keypoints]
-                logger.debug(f"SuperGlue input for pair {img1_name}, {img2_name}:")
-                logger.debug(f"  keypoints0 shape: {list(kp1.shape)}, scores0 shape: {list(scores1.shape)}, descriptors0 shape: {list(desc1.shape)}")
-                logger.debug(f"  keypoints1 shape: {list(kp2.shape)}, scores1 shape: {list(scores2.shape)}, descriptors1 shape: {list(desc2.shape)}")
-
-                # Load images for SuperGlue
-                img1 = images_data[img1_name]
-                img2 = images_data[img2_name]
-                img1_tensor = torch.from_numpy(img1 / 255.0).float()[None, None].to(device)
-                img2_tensor = torch.from_numpy(img2 / 255.0).float()[None, None].to(device)
-                logger.debug(f"  image0 shape: {list(img1_tensor.shape)}, image1 shape: {list(img2_tensor.shape)}")
-
-                data = {
-                    'keypoints0': kp1,
-                    'scores0': scores1,
-                    'descriptors0': desc1,
-                    'keypoints1': kp2,
-                    'scores1': scores2,
-                    'descriptors1': desc2,
-                    'image0_size': torch.tensor([image_sizes[img1_name]], dtype=torch.float).to(device),
-                    'image1_size': torch.tensor([image_sizes[img2_name]], dtype=torch.float).to(device),
-                    'image0': img1_tensor,
-                    'image1': img2_tensor
-                }
-                logger.debug(f"  image0_size shape: {list(data['image0_size'].shape)}, image1_size shape: {list(data['image1_size'].shape)}")
-
-                # Run SuperGlue
-                with torch.no_grad():
-                    pred = superglue_model(data)
-                    matches = pred['matches0'][0].cpu().numpy()
-                    valid = matches > -1
-                    matches0 = np.where(valid)[0]
-                    matches1 = matches[valid]
-                    if len(matches0) < 50:  # Filter low-quality matches (SphereSfM uses min_num_inliers=50)
-                        logger.warning(f"Too few matches ({len(matches0)}) for pair {img1_name}, {img2_name}, skipping")
-                        continue
-
-                matches_dict[(img1_name, img2_name)] = np.vstack([matches0, matches1]).T
-                logger.debug(f"Found {len(matches0)} matches between {img1_name} and {img2_name}")
-            except Exception as e:
-                logger.error(f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}")
-                conn.close()
-                return False, f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}"
-
-        # Add keypoints and descriptors using SQLite
-        for img_name, keypoints in keypoints_dict.items():
-            if img_name not in image_id_map:
-                logger.warning(f"Image {img_name} not in database")
-                continue
-            image_id = image_id_map[img_name]
-            num_keypoints = len(keypoints)
-            if num_keypoints == 0:
-                logger.warning(f"No keypoints for {img_name}")
-                continue
-            keypoints_data = keypoints[:, :2].astype(np.float32)  # Shape: [num_keypoints, 2]
-            scores = keypoints[:, 2].astype(np.float32)  # Shape: [num_keypoints]
-            descriptors_data = descriptors_dict[img_name].astype(np.float32)  # Shape: [256, num_keypoints]
-            # Keypoints table: (image_id, rows, cols, data)
-            keypoints_blob = np.concatenate([keypoints_data, np.zeros((num_keypoints, 1), dtype=np.float32), scores[:, None]], axis=1).tobytes()  # COLMAP expects [x, y, scale, orientation]
-            cursor.execute(
-                "INSERT INTO keypoints (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (image_id, num_keypoints, 4, keypoints_blob)
-            )
-            # Descriptors table: (image_id, rows, cols, data)
-            descriptors_blob = descriptors_data.T.tobytes()  # Shape: [num_keypoints, 256]
-            cursor.execute(
-                "INSERT INTO descriptors (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (image_id, num_keypoints, 256, descriptors_blob)
-            )
-            logger.debug(f"Added {num_keypoints} keypoints and descriptors for {img_name} to database")
-
-        # Add matches using SQLite
-        for (img1_name, img2_name), matches in matches_dict.items():
-            if img1_name not in image_id_map or img2_name not in image_id_map:
-                logger.warning(f"Image pair {img1_name}, {img2_name} not in database")
-                continue
-            image_id1 = image_id_map[img1_name]
-            image_id2 = image_id_map[img2_name]
-            if len(matches) == 0:
-                logger.warning(f"No matches for pair {img1_name}, {img2_name}")
-                continue
-            # Matches table: (image_id1, image_id2, rows, cols, data)
-            pair_id = min(image_id1, image_id2) * 2147483647 + max(image_id1, image_id2)  # COLMAP pair_id formula
-            matches_blob = matches.astype(np.uint32).tobytes()
-            cursor.execute(
-                "INSERT INTO matches (pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (pair_id, matches.shape[0], 2, matches_blob)
-            )
-            # Two-view geometry table: (image_id1, image_id2, matches, config, F, E, H)
-            cursor.execute(
-                "INSERT INTO two_view_geometries (pair_id, rows, cols, data, config, F, E, H) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (pair_id, matches.shape[0], 2, matches_blob, 2, b'', b'', b'')  # Minimal config, empty matrices
-            )
-            logger.debug(f"Added matches for pair {image_id1}, {image_id2} to database")
-
-        conn.commit()
-        conn.close()
-        logger.debug("SQLite database committed and closed")
-        return True, ""
+        logger.debug(f"Feature extraction completed: {feature_path}")
     except Exception as e:
-        logger.error(f"Failed to populate database: {str(e)}")
-        if 'conn' in locals():
-            conn.close()
-        return False, f"Database population failed: {str(e)}"
+        logger.error(f"Feature extraction failed: {str(e)}")
+        return False, f"Feature extraction failed: {str(e)}"
+
+    # Generate matching pairs (intra-image and sequential)
+    image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
+    pairs_path = os.path.join(output_dir, 'pairs.txt')
+    num_views = 8  # Number of perspective images per equirectangular
+    pairs = []
+    for eq_img, data in eq_to_persp.items():
+        persp_imgs = data['images']
+        # Intra-image matching: connect each view to its neighbors
+        for i in range(num_views):
+            view_i = persp_imgs[i]
+            view_prev = persp_imgs[(i - 1) % num_views]
+            view_next = persp_imgs[(i + 1) % num_views]
+            pairs.append((view_i, view_prev))
+            pairs.append((view_i, view_next))
+        # Sequential matching: connect to previous and next equirectangular images
+        eq_idx = int(eq_img.split('_')[1].split('.')[0])  # e.g., frame_0001.jpg -> 1
+        for offset in [-1, 1]:
+            neighbor_idx = eq_idx + offset
+            neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
+            if neighbor_img in eq_to_persp:
+                for i in range(num_views):
+                    view_i = persp_imgs[i]
+                    neighbor_view_i = eq_to_persp[neighbor_img]['images'][i]
+                    pairs.append((view_i, neighbor_view_i))
+    # Write pairs to file
+    with open(pairs_path, 'w') as f:
+        for img1, img2 in pairs:
+            f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
+    logger.debug(f"Generated {len(pairs)} pairs at {pairs_path}")
+
+    # Perform matching
+    match_path = os.path.join(output_dir, 'matches', 'superglue.h5')
+    os.makedirs(os.path.dirname(match_path), exist_ok=True)
+    try:
+        match_features.main(
+            conf=superglue_conf,
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            export_dir=Path(os.path.dirname(match_path)),
+            device=device
+        )
+        logger.debug(f"Matching completed: {match_path}")
+    except Exception as e:
+        logger.error(f"Matching failed: {str(e)}")
+        return False, f"Matching failed: {str(e)}"
+
+    # Run SfM with COLMAP
+    try:
+        model = reconstruction.main(
+            output_dir=Path(os.path.join(output_dir, 'sfm')),
+            image_dir=Path(images_dir),
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            matches=Path(match_path),
+            camera_mode='PER_FOLDER',
+            image_options={
+                'camera_model': 'PINHOLE',
+                'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"  # f=(width/2)/tan(FOV/2), cx=width/2, cy=height/2
+            }
+        )
+        logger.debug(f"SfM completed: {output_dir}/sfm")
+    except Exception as e:
+        logger.error(f"SfM failed: {str(e)}")
+        return False, f"SfM failed: {str(e)}"
+
+    return True, ""
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
@@ -551,11 +453,13 @@ def process_video():
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
+    persp_images_dir = os.path.join(base_dir, 'persp_images')
     masks_dir = os.path.join(base_dir, 'masks')
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
     poses_dir = os.path.join(base_dir, 'poses')
-    sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
+    hloc_dir = os.path.join(base_dir, 'hloc')
+    mapping_json_path = os.path.join(base_dir, 'eq_to_persp.json')
 
     if not cleanup_old_requests(request_id):
         logger.error("Failed to clean up old request directories")
@@ -566,10 +470,11 @@ def process_video():
     try:
         os.makedirs(video_dir, exist_ok=True)
         os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(persp_images_dir, exist_ok=True)
         os.makedirs(masks_dir, exist_ok=True)
         os.makedirs(sparse_dir, exist_ok=True)
         os.makedirs(poses_dir, exist_ok=True)
-        os.makedirs(sparse_cubic_dir, exist_ok=True)
+        os.makedirs(hloc_dir, exist_ok=True)
     except OSError as e:
         logger.error(f"Failed to create directories: {e}")
         response = {"status": "error", "message": f"Failed to create directories: {e}", "session_id": session_id}
@@ -692,108 +597,59 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    try:
-        logger.debug("Creating database")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'database_creator',
-            '--database_path', database_path
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate(timeout=60)
-        if process.returncode != 0:
-            logger.error(f"Database creation failed: {stderr}")
-            response = {"status": "error", "message": f"Database creation failed: {stderr}", "session_id": session_id}
+    # Split equirectangular images and masks into perspective images/masks
+    eq_to_persp = {}
+    image_files = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
+    mask_files = sorted(glob.glob(os.path.join(masks_dir, '*.png')))
+    for img_path in image_files:
+        img_name = os.path.basename(img_path)
+        # Split image
+        success, persp_paths = split_equirectangular_image(img_path, persp_images_dir)
+        if not success:
+            logger.error(f"Failed to split {img_path}")
+            response = {"status": "error", "message": f"Failed to split equirectangular image: {img_path}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
-        logger.debug(f"Database creation output: {stdout}")
-        image_files = glob.glob(os.path.join(images_dir, '*'))
-        logger.debug(f"Images in {images_dir} ({len(image_files)}): {[os.path.basename(f) for f in image_files]}")
-    except subprocess.TimeoutExpired:
-        logger.error("Database creation timed out")
-        response = {"status": "error", "message": "Database creation timed out", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
+        eq_to_persp[img_name] = {'images': [os.path.basename(p) for p in persp_paths], 'masks': []}
+        # Split corresponding mask if it exists
+        mask_path = os.path.join(masks_dir, img_name.replace('.jpg', '.png'))
+        if os.path.exists(mask_path):
+            success, mask_paths = split_equirectangular_mask(mask_path, masks_dir)
+            if not success:
+                logger.error(f"Failed to split mask {mask_path}")
+                response = {"status": "error", "message": f"Failed to split equirectangular mask: {mask_path}", "session_id": session_id}
+                logger.debug(f"Sending response: {response}")
+                return response, 500
+            eq_to_persp[img_name]['masks'] = [os.path.basename(p) for p in mask_paths]
+    with open(mapping_json_path, 'w') as f:
+        json.dump(eq_to_persp, f, indent=4)
+    logger.debug(f"Saved equirectangular-to-perspective mapping: {mapping_json_path}")
 
-    mask_files = glob.glob(os.path.join(masks_dir, '*'))
-    use_masks = len(mask_files) > 0
-    if use_masks:
-        logger.debug(f"Found {len(mask_files)} masks in {masks_dir}")
-
-    # Run SuperPoint and SuperGlue with sequential matching
+    # Run HLoc for feature extraction, matching, and SfM
     try:
-        logger.debug("Running SuperPoint and SuperGlue")
-        success, error_message = run_superpoint_superglue(
-            images_dir,
+        logger.debug("Running HLoc")
+        success, error_message = run_hloc(
+            persp_images_dir,
             database_path,
-            '/app/vocab_tree.bin',
-            masks_dir if use_masks else None
+            hloc_dir,
+            mapping_json_path,
+            masks_dir if mask_files else None
         )
         if not success:
-            logger.error(f"SuperPoint/SuperGlue processing failed: {error_message}")
-            response = {"status": "error", "message": f"SuperPoint/SuperGlue processing failed: {error_message}", "session_id": session_id}
+            logger.error(f"HLoc processing failed: {error_message}")
+            response = {"status": "error", "message": f"HLoc processing failed: {error_message}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
     except Exception as e:
-        logger.error(f"SuperPoint/SuperGlue processing failed: {str(e)}")
-        response = {"status": "error", "message": f"SuperPoint/SuperGlue processing failed: {str(e)}", "session_id": session_id}
+        logger.error(f"HLoc processing failed: {str(e)}")
+        response = {"status": "error", "message": f"HLoc processing failed: {str(e)}", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    try:
-        logger.debug("Running sparse reconstruction")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'mapper',
-            '--database_path', database_path,
-            '--image_path', images_dir,
-            '--output_path', sparse_dir,
-            '--Mapper.ba_refine_focal_length', '0',
-            '--Mapper.ba_refine_principal_point', '0',
-            '--Mapper.ba_refine_extra_params', '0',
-            '--Mapper.sphere_camera', '1',
-            '--Mapper.min_num_matches', '10',
-            '--Mapper.init_min_num_inliers', '50',
-            '--Mapper.init_min_tri_angle', '4',
-            '--Mapper.max_num_models', '10'
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            logger.error(f"Sparse reconstruction failed: {stderr}")
-            response = {"status": "error", "message": f"Sparse reconstruction failed: {stderr} {stdout}", "session_id": session_id}
-            logger.debug(f"Sending response: {response}")
-            return response, 500
-    except subprocess.TimeoutExpired:
-        logger.error("Sparse reconstruction timed out")
-        response = {"status": "error", "message": "Sparse reconstruction timed out", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
-
-    sparse_model_dir = os.path.join(sparse_dir, '0')
+    sparse_model_dir = os.path.join(hloc_dir, 'sfm')
     if not os.path.exists(sparse_model_dir):
         logger.error("Sparse model not found")
         response = {"status": "error", "message": "Sparse reconstruction failed: no model generated", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
-
-    try:
-        logger.debug(f"Sparse finished with : {stdout}")
-        logger.debug("Running cubic reprojection")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'sphere_cubic_reprojecer',
-            '--image_path', images_dir,
-            '--input_path', sparse_model_dir,
-            '--output_path', sparse_cubic_dir
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            logger.error(f"Cubic reprojection failed: {stderr}")
-            response = {"status": "error", "message": f"Cubic reprojection failed: {stderr} {stdout}", "session_id": session_id}
-            logger.debug(f"Sending response: {response}")
-            return response, 500
-    except subprocess.TimeoutExpired:
-        logger.error("Cubic reprojection timed out")
-        response = {"status": "error", "message": "Cubic reprojection timed out", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
@@ -836,13 +692,12 @@ def process_dense():
         return response, 400
 
     base_dir = os.path.join('/app/colmap_project', request_id)
-    images_dir = os.path.join(base_dir, 'images')
-    sparse_model_dir = os.path.join(base_dir, 'sparse', '0')
-    sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
+    persp_images_dir = os.path.join(base_dir, 'persp_images')
+    sparse_model_dir = os.path.join(base_dir, 'hloc', 'sfm')
     dense_base_dir = os.path.join(base_dir, 'dense_chunks')
     poses_dir = os.path.join(base_dir, 'poses')
 
-    if not all(os.path.exists(d) for d in [base_dir, images_dir, sparse_model_dir, sparse_cubic_dir]):
+    if not all(os.path.exists(d) for d in [base_dir, persp_images_dir, sparse_model_dir]):
         logger.error("Required project directories missing")
         response = {"status": "error", "message": "Project directories missing", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
@@ -863,11 +718,11 @@ def process_dense():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    cubic_image_files = glob.glob(os.path.join(sparse_cubic_dir, '*.jpg'))
+    image_files = glob.glob(os.path.join(persp_images_dir, '*.jpg'))
     chunk_size = 100
     overlap = 20
     step = chunk_size - overlap
-    image_list = sorted(cubic_image_files)
+    image_list = sorted(image_files)
     chunks = [image_list[i:i + chunk_size] for i in range(0, len(image_list), step) if image_list[i:i + chunk_size]]
     logger.debug(f"Split {len(image_list)} images into {len(chunks)} chunks")
 
@@ -883,7 +738,7 @@ def process_dense():
         for img_path in chunk:
             shutil.copy(img_path, chunk_image_dir)
         chunk_image_names = [os.path.basename(img) for img in chunk]
-        logger.debug(f"Chunk {idx}: {len(chunk_image_names)}")
+        logger.debug(f"Chunk {idx}: {len(chunk_image_names)} images")
 
         for img_name in chunk_image_names:
             if not os.path.exists(os.path.join(chunk_image_dir, img_name)):
@@ -893,7 +748,7 @@ def process_dense():
                 return response, 500
 
         try:
-            shutil.copytree(os.path.join(sparse_cubic_dir, 'sparse'), chunk_sparse_dir, dirs_exist_ok=True)
+            shutil.copytree(sparse_model_dir, chunk_sparse_dir, dirs_exist_ok=True)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
             chunk_image_names_set = set(chunk_image_names)
             images_to_remove = []
@@ -959,7 +814,7 @@ def process_dense():
                 '--input_path', chunk_sparse_dir,
                 '--output_path', chunk_dir,
                 '--output_type', 'COLMAP',
-                '--max_image_size', '600'
+                '--max_image_size', '960'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate()
             if process.returncode != 0:
@@ -981,10 +836,10 @@ def process_dense():
                 '--workspace_path', chunk_dir,
                 '--workspace_format', 'COLMAP',
                 '--PatchMatchStereo.gpu_index', '0',
-                '--PatchMatchStereo.max_image_size', '400',
+                '--PatchMatchStereo.max_image_size', '960',
                 '--PatchMatchStereo.window_radius', '3',
-                '--PatchMatchStereo.num_samples', '3',
-                '--PatchMatchStereo.num_iterations', '3',
+                '--PatchMatchStereo.num_samples', '5',
+                '--PatchMatchStereo.num_iterations', '5',
                 '--PatchMatchStereo.cache_size', '4'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate()
@@ -1008,25 +863,10 @@ def process_dense():
 
         ram_ok, available_ram = check_ram_for_fusion()
         if not ram_ok:
-            logger.error(f"Insufficient RAM for chunk {idx}: {available_ram}")
+            logger.error(f"Insufficient resources for chunk {idx}: {available_ram}")
             response = {"status": "error", "message": available_ram, "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
-        gpus = GPUtil.getGPUs()
-        free_memory_mb = gpus[0].memoryFree if gpus else 0
-        if free_memory_mb < 3000:
-            logger.error(f"Insufficient GPU memory for chunk {idx}: {free_memory_mb} MB")
-            response = {"status": "error", "message": f"Insufficient GPU memory for chunk {idx}", "session_id": session_id}
-            logger.debug(f"Sending response: {response}")
-            return response, 500
-        disk = shutil.disk_usage('/app')
-        free_gb = disk.free / (1024**3)
-        if free_gb < 1:
-            logger.error(f"Insufficient disk space for chunk {idx}: {free_gb:.2f} GB")
-            response = {"status": "error", "message": f"Insufficient disk space for chunk {idx}", "session_id": session_id}
-            logger.debug(f"Sending response: {response}")
-            return response, 500
-        logger.debug(f"Resources for chunk {idx}: RAM={available_ram} MB, GPU={free_memory_mb} MB, Disk={free_gb} GB")
         cache_size = min(4, max(1, int((available_ram / 1024) * 0.5)))
         partial_ply = os.path.join(chunk_dir, f'dense_chunk_{idx}.ply')
         try:
@@ -1043,21 +883,16 @@ def process_dense():
                 '--StereoFusion.max_reproj_error', '2',
                 '--StereoFusion.max_depth_error', '0.3',
                 '--StereoFusion.cache_size', str(cache_size)
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = process.communicate()
             if process.returncode != 0:
-                logger.error(f"Stereo fusion failed for chunk {idx}: {stderr} {stdout}")
+                logger.error(f"Stereo fusion failed for chunk {idx}: {stderr}")
                 response = {"status": "error", "message": f"Stereo fusion failed for chunk {idx}: {stderr}", "session_id": session_id}
                 logger.debug(f"Sending response: {response}")
                 return response, 500
         except subprocess.TimeoutExpired:
             logger.error(f"Stereo fusion timed out for chunk {idx}")
             response = {"status": "error", "message": f"Stereo fusion timed out for chunk {idx}", "session_id": session_id}
-            logger.debug(f"Sending response: {response}")
-            return response, 500
-        except Exception as e:
-            logger.error(f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}")
-            response = {"status": "error", "message": f"Unexpected error during stereo fusion for chunk {idx}: {str(e)}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
 

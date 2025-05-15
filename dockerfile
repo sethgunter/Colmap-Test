@@ -17,30 +17,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg lsof wget sqlite3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch and dependencies for SuperPoint/SuperGlue
-RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+# Install PyTorch and HLoc dependencies
+RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
+    pip3 install kornia==0.6.8 h5py py360convert
 
-# Clone and install SuperPoint (from super-colmap) and SuperGlue
-RUN git clone https://github.com/Xbbei/super-colmap.git /super-colmap && \
-    git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git /superglue && \
-    mkdir -p /app/superpoint_superglue/models/weights && \
-    cp /super-colmap/superpoint.py /app/superpoint_superglue/models/superpoint.py && \
-    cp /superglue/models/superglue.py /app/superpoint_superglue/models/superglue.py && \
-    cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
-    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superpoint_v1.pth -O /app/superpoint_superglue/models/weights/superpoint_v1.pth && \
-    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superglue_indoor.pth -O /app/superpoint_superglue/models/weights/superglue_indoor.pth && \
-    # Copy superpoint_v1.pth to the hardcoded path expected by superpoint.py
-    cp /app/superpoint_superglue/models/weights/superpoint_v1.pth /app/superpoint_superglue/models/superpoint_v1.pth && \
-    rm -rf /super-colmap /superglue
+# Clone and install HLoc
+RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
+    cd /hloc && \
+    pip3 install . && \
+    rm -rf /hloc
 
-# Build and install SphereSfM
-RUN git clone https://github.com/json87/SphereSfM.git colmap && \
-    cd colmap && \
-    git checkout main && \
+# Build and install COLMAP
+RUN git clone https://github.com/colmap/colmap.git /colmap && \
+    cd /colmap && \
+    git checkout dev && \
     mkdir build && cd build && \
     cmake .. -GNinja -DCMAKE_INSTALL_PREFIX=/colmap-install -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} && \
     ninja install && \
-    cd ../.. && rm -rf colmap
+    cd ../.. && rm -rf /colmap
 
 # Runtime stage
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn8-runtime-ubuntu${UBUNTU_VERSION}
@@ -58,12 +52,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies
 RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy==1.26.4 scipy opencv-contrib-python \
-    torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+    torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
+    pip3 install kornia==0.6.8 h5py py360convert hloc
 
-# Copy SuperPoint and SuperGlue models
-COPY --from=builder /app/superpoint_superglue /app/superpoint_superglue
-
-# Copy SphereSfM/COLMAP installation
+# Copy COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
 
 # Copy application code
@@ -80,7 +72,7 @@ RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/in
 # Set environment variables for CUDA
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
-ENV PYTHONPATH=/app:$PYTHONPATH
+ENV PYTHONPATH=/app:/
 
 # Expose port
 EXPOSE 8080
