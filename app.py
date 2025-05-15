@@ -233,14 +233,17 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
+# Note: Only the run_superpoint_superglue function is shown for brevity.
+# Replace this function in your existing app.py, keeping all other code unchanged.
+
 def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
     """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching."""
     try:
         from superpoint_superglue.models.superpoint import SuperPoint
         from superpoint_superglue.models.superglue import SuperGlue
-        from pycolmap import Database as COLMAPDatabase
+        import pycolmap
     except ImportError as e:
-        logger.error(f"Failed to import SuperPoint/SuperGlue or COLMAPDatabase: {str(e)}")
+        logger.error(f"Failed to import SuperPoint/SuperGlue or pycolmap: {str(e)}")
         return False, f"Import failed: {str(e)}"
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -340,16 +343,31 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         descriptors_dict[img_name] = descriptors
         logger.debug(f"Extracted {len(keypoints)} keypoints for {img_name}")
 
-    # Create COLMAP database
+    # Initialize database using COLMAP CLI
     try:
-        db = COLMAPDatabase.connect(database_path)
-        db.create_tables()
+        process = subprocess.Popen([
+            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+            'colmap', 'database_creator',
+            '--database_path', database_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate(timeout=60)
+        if process.returncode != 0:
+            logger.error(f"Database creation failed: {stderr}")
+            return False, f"Database creation failed: {stderr}"
+        logger.debug(f"Database creation output: {stdout}")
+    except subprocess.TimeoutExpired:
+        logger.error("Database creation timed out")
+        return False, "Database creation timed out"
 
-        # Add camera (SPHERE model for equirectangular frames)
-        camera_model = 10  # SPHERE model ID in COLMAP
-        width = 1920  # Adjust based on your images
+    # Add data to database using pycolmap
+    try:
+        db = pycolmap.Database(database_path)
+
+        # Add camera (SPHERE model)
+        camera_model = 10  # SPHERE model ID
+        width = 1920
         height = 960
-        params = np.array([])  # SPHERE model has no parameters
+        params = []  # SPHERE model has no parameters
         camera_id = db.add_camera(camera_model, width, height, params)
         logger.debug(f"Added camera ID: {camera_id}")
 
@@ -360,22 +378,6 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             image_id = db.add_image(img_name, camera_id)
             image_id_map[img_name] = image_id
             logger.debug(f"Added image {img_name} with ID {image_id}")
-
-        # Add keypoints
-        for img_name, keypoints in keypoints_dict.items():
-            if img_name not in image_id_map:
-                logger.warning(f"Image {img_name} not in database")
-                continue
-            image_id = image_id_map[img_name]
-            num_keypoints = len(keypoints)
-            if num_keypoints == 0:
-                logger.warning(f"No keypoints for {img_name}")
-                continue
-            keypoints_data = keypoints[:, :2].astype(np.float32)
-            db.add_keypoints(image_id, keypoints_data)
-            descriptors_data = descriptors_dict[img_name].astype(np.float32)
-            db.add_descriptors(image_id, descriptors_data)
-            logger.debug(f"Added {num_keypoints} keypoints for {img_name}")
 
         # Perform SuperGlue matching (sequential pairs)
         matches_dict = {}
@@ -434,6 +436,22 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                 db.close()
                 return False, f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}"
 
+        # Add keypoints
+        for img_name, keypoints in keypoints_dict.items():
+            if img_name not in image_id_map:
+                logger.warning(f"Image {img_name} not in database")
+                continue
+            image_id = image_id_map[img_name]
+            num_keypoints = len(keypoints)
+            if num_keypoints == 0:
+                logger.warning(f"No keypoints for {img_name}")
+                continue
+            keypoints_data = keypoints[:, :2].astype(np.float32)
+            db.add_keypoints(image_id, keypoints_data)
+            descriptors_data = descriptors_dict[img_name].astype(np.float32)
+            db.add_descriptors(image_id, descriptors_data)
+            logger.debug(f"Added {num_keypoints} keypoints for {img_name}")
+
         # Add matches and two-view geometry
         for (img1_name, img2_name), matches in matches_dict.items():
             if img1_name not in image_id_map or img2_name not in image_id_map:
@@ -448,16 +466,14 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             db.add_two_view_geometry(image_id1, image_id2, matches)
             logger.debug(f"Added matches for pair {image_id1}, {image_id2}")
 
-        # Commit and close database
-        db.commit()
         db.close()
-        logger.debug("Successfully created and populated COLMAP database")
+        logger.debug("Successfully populated COLMAP database")
         return True, ""
     except Exception as e:
-        logger.error(f"Failed to create/populate database: {str(e)}")
+        logger.error(f"Failed to populate database: {str(e)}")
         if 'db' in locals():
             db.close()
-        return False, f"Database creation failed: {str(e)}"
+        return False, f"Database population failed: {str(e)}"
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
