@@ -24,7 +24,7 @@ RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url
 RUN git clone https://github.com/magicleap/SuperPointPretrainedNetwork.git /superpoint && \
     git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git /superglue && \
     mkdir -p /app/superpoint_superglue/models && \
-    cp /superpoint/superpoint.py /app/superpoint_superglue/models/superpoint.py && \
+    cp /superpoint/superpoint_v1.py /app/superpoint_superglue/models/superpoint.py && \
     cp /superglue/models/superglue.py /app/superpoint_superglue/models/superglue.py && \
     cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
     rm -rf /superpoint /superglue
