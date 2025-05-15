@@ -236,6 +236,9 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
 # Note: Only the run_superpoint_superglue function is shown.
 # Replace this function in your existing app.py, keeping all other code unchanged.
 
+# Note: Only run_superpoint_superglue and run_sparse_reconstruction are shown.
+# Replace these functions in your app.py, keeping other code unchanged.
+
 def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
     """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching."""
     try:
@@ -255,7 +258,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
     superpoint_config = {
         'nms_radius': 4,
         'keypoint_threshold': 0.005,
-        'max_keypoints': 1000,  # Reduced to avoid CUDA memory issues
+        'max_keypoints': 1000,  # Balanced for memory and match count
         'weight_path': '/app/superpoint_superglue/models/weights/superpoint_v1.pth'
     }
     superpoint_model = SuperPoint(superpoint_config).eval().to(device)
@@ -264,7 +267,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
     # Initialize SuperGlue
     superglue_config = {
         'weights_path': '/app/superpoint_superglue/models/weights/superglue_indoor.pth',
-        'sinkhorn_iterations': 50,  # Increased to improve match convergence
+        'sinkhorn_iterations': 50,  # Increased for better convergence
         'match_threshold': 0.1     # Lowered to allow more matches
     }
     superglue_model = SuperGlue(superglue_config).eval().to(device)
@@ -377,13 +380,12 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         conn = sqlite3.connect(database_path)
         cursor = conn.cursor()
 
-        # Add camera (SPHERE model)
-        camera_model = 10  # SPHERE model ID
+        # Add camera (SPHERE model, ID 11)
+        camera_model = 11  # SPHERE model ID (per camera_models.h)
         width = 1920
         height = 960
-        prior_focal_length = 1920.0  # Default focal length (image width)
-        # SPHERE model requires 12 parameters: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
-        params = np.array([1920.0, 1920.0, 960.0, 480.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64).tobytes()
+        prior_focal_length = 1.0  # Fixed for SPHERE model
+        params = np.array([1.0, width / 2.0, height / 2.0], dtype=np.float64).tobytes()  # f=1.0, cx=width/2, cy=height/2
         cursor.execute(
             "INSERT INTO cameras (model, width, height, params, prior_focal_length) VALUES (?, ?, ?, ?, ?)",
             (camera_model, width, height, params, prior_focal_length)
@@ -405,7 +407,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
 
         # Perform SuperGlue matching (sequential pairs)
         matches_dict = {}
-        overlap = 2
+        overlap = 3  # Increased to generate more pairs
         sequential_pairs = []
         for i in range(len(image_files) - 1):
             img1_name = os.path.basename(image_files[i])
@@ -458,6 +460,9 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                     valid = matches > -1
                     matches0 = np.where(valid)[0]
                     matches1 = matches[valid]
+                    if len(matches0) < 50:  # Filter low-quality matches (SphereSfM uses min_num_inliers=50)
+                        logger.warning(f"Too few matches ({len(matches0)}) for pair {img1_name}, {img2_name}, skipping")
+                        continue
 
                 matches_dict[(img1_name, img2_name)] = np.vstack([matches0, matches1]).T
                 logger.debug(f"Found {len(matches0)} matches between {img1_name} and {img2_name}")
