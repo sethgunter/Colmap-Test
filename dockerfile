@@ -14,20 +14,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     qtbase5-dev libqt5opengl5-dev libcgal-dev libceres-dev libcurl4-openssl-dev \
     python3 python3-pip python3-dev \
     cuda-cudart-dev-11-7 cuda-libraries-dev-11-7 cuda-nvcc-11-7 cuda-compiler-11-7 \
-    ffmpeg lsof && \
+    ffmpeg lsof wget && \
     rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch and dependencies for SuperPoint/SuperGlue
 RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 
-# Clone and install SuperPoint and SuperGlue
-RUN git clone https://github.com/magicleap/SuperPointPretrainedNetwork.git /superpoint && \
+# Clone and install SuperPoint (from super-colmap) and SuperGlue
+RUN git clone https://github.com/Xbbei/super-colmap.git /super-colmap && \
     git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git /superglue && \
     mkdir -p /app/superpoint_superglue/models && \
-    cp /superpoint/superpoint_v1.py /app/superpoint_superglue/models/superpoint.py && \
+    cp /super-colmap/superpoint.py /app/superpoint_superglue/models/superpoint.py && \
     cp /superglue/models/superglue.py /app/superpoint_superglue/models/superglue.py && \
     cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
-    rm -rf /superpoint /superglue
+    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superpoint_v1.pth -O /app/superpoint_superglue/models/superpoint_v1.pth && \
+    rm -rf /super-colmap /superglue
 
 # Build and install SphereSfM
 RUN git clone https://github.com/json87/SphereSfM.git colmap && \
