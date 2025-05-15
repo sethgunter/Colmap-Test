@@ -29,6 +29,8 @@ RUN git clone https://github.com/Xbbei/super-colmap.git /super-colmap && \
     cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
     wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superpoint_v1.pth -O /app/superpoint_superglue/models/weights/superpoint_v1.pth && \
     wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superglue_outdoor.pth -O /app/superpoint_superglue/models/weights/superglue_outdoor.pth && \
+    # Copy superpoint_v1.pth to the hardcoded path expected by superpoint.py
+    cp /app/superpoint_superglue/models/weights/superpoint_v1.pth /app/superpoint_superglue/models/superpoint_v1.pth && \
     rm -rf /super-colmap /superglue
 
 # Build and install SphereSfM
@@ -76,6 +78,7 @@ RUN chmod 644 /app/vocab_tree.bin
 RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/index.html
 
 # Set environment variables for CUDA
+# Note: Requires NVIDIA Container Toolkit and --gpus all flag when running container for GPU support
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 ENV PYTHONPATH=/app:$PYTHONPATH
