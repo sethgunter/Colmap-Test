@@ -233,12 +233,6 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-# Note: Only the run_superpoint_superglue function is shown for brevity.
-# Replace this function in your existing app.py, keeping all other code unchanged.
-
-# Note: Only the run_superpoint_superglue function is shown for brevity.
-# Replace this function in your existing app.py, keeping all other code unchanged.
-
 # Note: Only the run_superpoint_superglue function is shown.
 # Replace this function in your existing app.py, keeping all other code unchanged.
 
@@ -260,10 +254,11 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
     superpoint_config = {
         'nms_radius': 4,
         'keypoint_threshold': 0.005,
-        'max_keypoints': 13000,
+        'max_keypoints': 1000,  # Reduced to avoid CUDA memory issues
         'weight_path': '/app/superpoint_superglue/models/weights/superpoint_v1.pth'
     }
     superpoint_model = SuperPoint(superpoint_config).eval().to(device)
+    logger.debug(f"SuperPoint config: {superpoint_config}")
 
     # Initialize SuperGlue
     superglue_config = {
@@ -272,22 +267,26 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         'match_threshold': 0.2
     }
     superglue_model = SuperGlue(superglue_config).eval().to(device)
+    logger.debug(f"SuperGlue config: {superglue_config}")
 
     # Load images and optional masks
     image_files = sorted(glob.glob(os.path.join(images_dir, '*')))
     if not image_files:
         logger.error("No images found in images_dir")
         return False, "No images found"
+    logger.debug(f"Found {len(image_files)} images: {image_files[:5]}...")
 
     mask_files = sorted(glob.glob(os.path.join(masks_dir, '*'))) if masks_dir and os.path.exists(masks_dir) else []
     use_masks = len(mask_files) > 0
     if use_masks and len(mask_files) != len(image_files):
         logger.warning(f"Mismatch: {len(mask_files)} masks vs {len(image_files)} images")
         use_masks = False
+    logger.debug(f"Found {len(mask_files)} masks, use_masks: {use_masks}")
 
     # Create feature directory
     feature_dir = os.path.join(os.path.dirname(database_path), 'features')
     os.makedirs(feature_dir, exist_ok=True)
+    logger.debug(f"Created feature directory: {feature_dir}")
 
     # Process images with SuperPoint
     keypoints_dict = {}
@@ -303,6 +302,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         img_height, img_width = img.shape
         image_sizes[img_name] = (img_width, img_height)
         images_data[img_name] = img
+        logger.debug(f"Loaded image {img_name} with shape: ({img_height}, {img_width})")
 
         # Apply mask if available
         mask = None
@@ -315,11 +315,14 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                     mask = None
                 else:
                     mask = (mask > 0).astype(np.uint8)
+            logger.debug(f"Mask for {img_name}: {'applied' if mask is not None else 'not applied'}")
 
         # Prepare image for SuperPoint
         img_tensor = torch.from_numpy(img / 255.0).float()[None, None].to(device)
+        logger.debug(f"Image tensor shape for {img_name}: {list(img_tensor.shape)}")
         if mask is not None:
             mask_tensor = torch.from_numpy(mask).float()[None, None].to(device)
+            logger.debug(f"Mask tensor shape for {img_name}: {list(mask_tensor.shape)}")
         else:
             mask_tensor = None
 
@@ -328,7 +331,8 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             pred = superpoint_model({'image': img_tensor})
             keypoints = pred['keypoints'][0].cpu().numpy()
             scores = pred['scores'][0].cpu().numpy()
-            descriptors = pred['descriptors'][0].cpu().numpy().T
+            descriptors = pred['descriptors'][0].cpu().numpy()  # Shape: [256, num_keypoints]
+            logger.debug(f"SuperPoint output for {img_name}: keypoints shape {keypoints.shape}, scores shape {scores.shape}, descriptors shape {descriptors.shape}")
 
         if mask is not None:
             # Filter keypoints by mask
@@ -343,12 +347,13 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             valid = np.array(valid)
             keypoints = keypoints[valid]
             scores = scores[valid]
-            descriptors = descriptors[valid]
+            descriptors = descriptors[:, valid]  # Shape: [256, num_valid_keypoints]
+            logger.debug(f"After mask filtering for {img_name}: keypoints shape {keypoints.shape}, scores shape {scores.shape}, descriptors shape {descriptors.shape}")
 
         # Store results
         keypoints_dict[img_name] = np.hstack([keypoints, scores[:, None]])
         descriptors_dict[img_name] = descriptors
-        logger.debug(f"Extracted {len(keypoints)} keypoints for {img_name}")
+        logger.debug(f"Stored {len(keypoints)} keypoints for {img_name}")
 
     # Initialize database using COLMAP CLI
     try:
@@ -399,9 +404,11 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
 
         conn.commit()
         conn.close()
+        logger.debug("SQLite database committed")
 
         # Use pycolmap for keypoints, descriptors, matches
         db = pycolmap.Database(database_path)
+        logger.debug(f"Opened pycolmap database: {database_path}")
 
         # Perform SuperGlue matching (sequential pairs)
         matches_dict = {}
@@ -412,6 +419,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             for j in range(i + 1, min(i + overlap + 1, len(image_files))):
                 img2_name = os.path.basename(image_files[j])
                 sequential_pairs.append((img1_name, img2_name))
+        logger.debug(f"Generated {len(sequential_pairs)} sequential pairs: {sequential_pairs[:5]}...")
 
         for img1_name, img2_name in sequential_pairs:
             if img1_name not in keypoints_dict or img2_name not in keypoints_dict:
@@ -421,16 +429,20 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             try:
                 kp1 = torch.from_numpy(keypoints_dict[img1_name][:, :2]).float().to(device)[None]
                 scores1 = torch.from_numpy(keypoints_dict[img1_name][:, 2]).float().to(device)[None]
-                desc1 = torch.from_numpy(descriptors_dict[img1_name]).float().to(device)[None]
+                desc1 = torch.from_numpy(descriptors_dict[img1_name]).float().to(device).unsqueeze(0)  # Shape: [1, 256, num_keypoints]
                 kp2 = torch.from_numpy(keypoints_dict[img2_name][:, :2]).float().to(device)[None]
                 scores2 = torch.from_numpy(keypoints_dict[img2_name][:, 2]).float().to(device)[None]
-                desc2 = torch.from_numpy(descriptors_dict[img2_name]).float().to(device)[None]
+                desc2 = torch.from_numpy(descriptors_dict[img2_name]).float().to(device).unsqueeze(0)  # Shape: [1, 256, num_keypoints]
+                logger.debug(f"SuperGlue input for pair {img1_name}, {img2_name}:")
+                logger.debug(f"  keypoints0 shape: {list(kp1.shape)}, scores0 shape: {list(scores1.shape)}, descriptors0 shape: {list(desc1.shape)}")
+                logger.debug(f"  keypoints1 shape: {list(kp2.shape)}, scores1 shape: {list(scores2.shape)}, descriptors1 shape: {list(desc2.shape)}")
 
                 # Load images for SuperGlue
                 img1 = images_data[img1_name]
                 img2 = images_data[img2_name]
                 img1_tensor = torch.from_numpy(img1 / 255.0).float()[None, None].to(device)
                 img2_tensor = torch.from_numpy(img2 / 255.0).float()[None, None].to(device)
+                logger.debug(f"  image0 shape: {list(img1_tensor.shape)}, image1 shape: {list(img2_tensor.shape)}")
 
                 data = {
                     'keypoints0': kp1,
@@ -444,6 +456,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                     'image0': img1_tensor,
                     'image1': img2_tensor
                 }
+                logger.debug(f"  image0_size shape: {list(data['image0_size'].shape)}, image1_size shape: {list(data['image1_size'].shape)}")
 
                 # Run SuperGlue
                 with torch.no_grad():
@@ -471,10 +484,10 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                 logger.warning(f"No keypoints for {img_name}")
                 continue
             keypoints_data = keypoints[:, :2].astype(np.float32)
-            db.add_keypoints(image_id, keypoints_data)
             descriptors_data = descriptors_dict[img_name].astype(np.float32)
+            db.add_keypoints(image_id, keypoints_data)
             db.add_descriptors(image_id, descriptors_data)
-            logger.debug(f"Added {num_keypoints} keypoints for {img_name}")
+            logger.debug(f"Added {num_keypoints} keypoints for {img_name} to database")
 
         # Add matches and two-view geometry
         for (img1_name, img2_name), matches in matches_dict.items():
@@ -488,7 +501,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                 continue
             db.add_matches(image_id1, image_id2, matches)
             db.add_two_view_geometry(image_id1, image_id2, matches)
-            logger.debug(f"Added matches for pair {image_id1}, {image_id2}")
+            logger.debug(f"Added matches for pair {image_id1}, {image_id2} to database")
 
         db.close()
         logger.debug("Successfully populated COLMAP database")
