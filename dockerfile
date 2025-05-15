@@ -23,7 +23,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Install PyTorch and HLoc dependencies in virtual environment
 RUN pip install --no-cache-dir torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
-    pip install --no-cache-dir kornia==0.6.8 h5py py360convert
+    pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
 # Clone and install HLoc with modified requirements
 RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
@@ -62,7 +62,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install Python dependencies in virtual environment
 RUN pip install --no-cache-dir flask psutil gunicorn GPUtil plyfile pycolmap numpy==1.26.4 scipy opencv-contrib-python \
     torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
-    pip install --no-cache-dir kornia==0.6.8 h5py py360convert hloc
+    pip install --no-cache-dir kornia==0.6.11 h5py py360convert hloc==1.5
 
 # Copy COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
