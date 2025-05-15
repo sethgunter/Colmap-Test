@@ -236,12 +236,16 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
 # Note: Only the run_superpoint_superglue function is shown for brevity.
 # Replace this function in your existing app.py, keeping all other code unchanged.
 
+# Note: Only the run_superpoint_superglue function is shown for brevity.
+# Replace this function in your existing app.py, keeping all other code unchanged.
+
 def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
     """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching."""
     try:
         from superpoint_superglue.models.superpoint import SuperPoint
         from superpoint_superglue.models.superglue import SuperGlue
         import pycolmap
+        import sqlite3
     except ImportError as e:
         logger.error(f"Failed to import SuperPoint/SuperGlue or pycolmap: {str(e)}")
         return False, f"Import failed: {str(e)}"
@@ -359,25 +363,41 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         logger.error("Database creation timed out")
         return False, "Database creation timed out"
 
-    # Add data to database using pycolmap
+    # Add data to database using SQLite and pycolmap
     try:
-        db = pycolmap.Database(database_path)
+        # Add camera and images via SQLite
+        conn = sqlite3.connect(database_path)
+        cursor = conn.cursor()
 
         # Add camera (SPHERE model)
         camera_model = 10  # SPHERE model ID
         width = 1920
         height = 960
-        params = []  # SPHERE model has no parameters
-        camera_id = db.add_camera(camera_model, width, height, params)
+        params = b''  # SPHERE model has no parameters
+        cursor.execute(
+            "INSERT INTO cameras (model, width, height, params) VALUES (?, ?, ?, ?)",
+            (camera_model, width, height, params)
+        )
+        camera_id = cursor.lastrowid
         logger.debug(f"Added camera ID: {camera_id}")
 
         # Add images
         image_id_map = {}
         for img_path in image_files:
             img_name = os.path.basename(img_path)
-            image_id = db.add_image(img_name, camera_id)
+            cursor.execute(
+                "INSERT INTO images (name, camera_id) VALUES (?, ?)",
+                (img_name, camera_id)
+            )
+            image_id = cursor.lastrowid
             image_id_map[img_name] = image_id
             logger.debug(f"Added image {img_name} with ID {image_id}")
+
+        conn.commit()
+        conn.close()
+
+        # Use pycolmap for keypoints, descriptors, matches
+        db = pycolmap.Database(database_path)
 
         # Perform SuperGlue matching (sequential pairs)
         matches_dict = {}
