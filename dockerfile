@@ -17,6 +17,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg lsof && \
     rm -rf /var/lib/apt/lists/*
 
+# Install PyTorch and dependencies for SuperPoint/SuperGlue
+RUN pip3 install torch==1.12.1+cu117 torchvision==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+
+# Clone and install SuperPoint and SuperGlue
+RUN git clone https://github.com/magicleap/SuperPointPretrainedNetwork.git /superpoint && \
+    git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git /superglue && \
+    mkdir -p /app/superpoint_superglue/models && \
+    cp /superpoint/superpoint.py /app/superpoint_superglue/models/superpoint.py && \
+    cp /superglue/models/superglue.py /app/superpoint_superglue/models/superglue.py && \
+    cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
+    rm -rf /superpoint /superglue
+
 # Build and install SphereSfM
 RUN git clone https://github.com/json87/SphereSfM.git colmap && \
     cd colmap && \
@@ -41,7 +53,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy scipy opencv-contrib-python
+RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy scipy opencv-contrib-python \
+    torch==1.12.1+cu117 torchvision==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+
+# Copy SuperPoint and SuperGlue models
+COPY --from=builder /app/superpoint_superglue /app/superpoint_superglue
 
 # Copy SphereSfM/COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
@@ -60,6 +76,7 @@ RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/in
 # Set environment variables for CUDA
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
+ENV PYTHONPATH=/app:$PYTHONPATH
 
 # Expose port
 EXPOSE 8080

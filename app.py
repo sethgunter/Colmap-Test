@@ -15,13 +15,15 @@ import glob
 import plyfile
 import pycolmap
 import numpy as np
+import cv2
+import torch
+import sqlite3
+from pathlib import Path
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
-# Ensure consistent secret_key for session persistence
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'fixed-secret-key-for-testing')
 
-# Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,6 @@ def serve_output(path):
         return {"status": "error", "message": f"Error serving file: {str(e)}"}, 500
 
 def terminate_child_processes():
-    """Terminate any child processes that might be holding files open."""
     try:
         current_process = psutil.Process()
         children = current_process.children(recursive=True)
@@ -81,7 +82,6 @@ def terminate_child_processes():
         logger.error(f"Error while terminating child processes: {e}")
 
 def debug_file_locks(directory):
-    """Log files that might be locked in the directory using lsof."""
     try:
         result = subprocess.run(['lsof', directory], capture_output=True, text=True)
         logger.debug(f"lsof output for {directory}:\n{result.stdout}")
@@ -91,13 +91,11 @@ def debug_file_locks(directory):
         logger.warning("lsof not installed, cannot debug file locks")
 
 def cleanup_old_requests(current_request_id):
-    """Clean up all directories in /app/colmap_project except the current request's directory."""
     project_dir = '/app/colmap_project'
     try:
         if not os.path.exists(project_dir):
             logger.debug(f"No project directory found at {project_dir}")
             return True
-
         for item in os.listdir(project_dir):
             item_path = os.path.join(project_dir, item)
             if os.path.isdir(item_path) and item != current_request_id:
@@ -120,11 +118,9 @@ def cleanup_old_requests(current_request_id):
         return False
 
 def check_resources(current_request_id):
-    """Check available disk space, GPU memory, and RAM after cleaning up old requests."""
     if not cleanup_old_requests(current_request_id):
         logger.error("Failed to clean up old request directories")
         return False, "Failed to clean up old request directories"
-
     try:
         disk = shutil.disk_usage('/app')
         free_gb = disk.free / (1024**3)
@@ -132,7 +128,6 @@ def check_resources(current_request_id):
         if free_gb < 5:
             logger.error(f"Low disk space: {free_gb:.2f} GB available")
             return False, f"Low disk space: {free_gb:.2f} GB available"
-
         gpus = GPUtil.getGPUs()
         if not gpus:
             logger.error("No GPU available")
@@ -143,20 +138,17 @@ def check_resources(current_request_id):
         if free_memory_mb < 10000:
             logger.error(f"Insufficient GPU memory: {free_memory_mb} MB available")
             return False, f"Insufficient GPU memory: {free_memory_mb} MB available"
-
         available_ram = psutil.virtual_memory().available / (1024 ** 2)
         logger.debug(f"Available RAM: {available_ram} MB")
         if available_ram < 20000:
             logger.error(f"Insufficient RAM: {available_ram} MB available")
             return False, f"Insufficient RAM: {available_ram} MB available"
-
         return True, ""
     except Exception as e:
         logger.error(f"Resource check failed: {e}")
         return False, f"Resource check failed: {e}"
 
 def check_ram_for_fusion():
-    """Check available RAM and log GPU memory before stereo fusion."""
     available_ram = psutil.virtual_memory().available / (1024 ** 2)
     gpus = GPUtil.getGPUs()
     if gpus:
@@ -164,14 +156,12 @@ def check_ram_for_fusion():
         free_memory_mb = gpu.memoryFree
     else:
         logger.warning("No GPU detected before stereo fusion")
-
     if available_ram < 8000:
         logger.error(f"Insufficient RAM for stereo fusion: {available_ram} MB available")
         return False, f"Insufficient RAM for fusion: {available_ram} MB available"
     return True, available_ram
 
 def merge_ply_files(ply_files, output_path):
-    """Merge multiple PLY files into a single PLY file, handling variable vertex attributes."""
     all_vertices = []
     all_colors = []
     for ply_path in ply_files:
@@ -181,21 +171,17 @@ def merge_ply_files(ply_files, output_path):
         colors = np.array([(v['red'], v['green'], v['blue']) for v in vertices], dtype=np.uint8)
         all_vertices.append(coords)
         all_colors.append(colors)
-
     merged_vertices = np.concatenate(all_vertices)
     merged_colors = np.concatenate(all_colors)
-
     vertex_data = np.array(
         [(v[0], v[1], v[2], c[0], c[1], c[2]) for v, c in zip(merged_vertices, merged_colors)],
         dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
     )
-
     vertex_element = plyfile.PlyElement.describe(vertex_data, 'vertex')
     plyfile.PlyData([vertex_element]).write(output_path)
     logger.debug(f"Merged {len(ply_files)} PLY files into {output_path}")
 
 def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, poses_json_path):
-    """Export sparse PLY and camera poses."""
     try:
         logger.debug("Exporting sparse point cloud")
         process = subprocess.Popen([
@@ -214,7 +200,6 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
     except subprocess.TimeoutExpired:
         logger.error("Sparse point cloud export timed out")
         return False, "Sparse point cloud export timed out"
-
     try:
         logger.debug("Exporting camera poses")
         process = subprocess.Popen([
@@ -231,7 +216,6 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
     except subprocess.TimeoutExpired:
         logger.error("Model conversion timed out")
         return False, "Model conversion timed out"
-
     try:
         with open(os.path.join(poses_dir, 'images.txt')) as f:
             lines = f.readlines()[4::2]
@@ -247,8 +231,251 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
     except Exception as e:
         logger.error(f"Failed to parse camera poses: {str(e)}")
         return False, f"Failed to parse camera poses: {str(e)}"
-
     return True, ""
+
+def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
+    """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching and loop closure."""
+    try:
+        from superpoint_superglue.models.superpoint import SuperPoint
+        from superpoint_superglue.models.superglue import SuperGlue
+    except ImportError as e:
+        logger.error(f"Failed to import SuperPoint/SuperGlue: {str(e)}")
+        return False, f"SuperPoint/SuperGlue import failed: {str(e)}"
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    logger.debug(f"Using device: {device}")
+
+    # Initialize SuperPoint
+    superpoint_config = {
+        'nms_radius': 4,
+        'keypoint_threshold': 0.005,
+        'max_keypoints': 13000
+    }
+    superpoint_model = SuperPoint(superpoint_config).eval().to(device)
+
+    # Initialize SuperGlue
+    superglue_config = {
+        'weights': 'outdoor',
+        'sinkhorn_iterations': 20,
+        'match_threshold': 0.2
+    }
+    superglue_model = SuperGlue(superglue_config).eval().to(device)
+
+    # Load images and optional masks
+    image_files = sorted(glob.glob(os.path.join(images_dir, '*')))
+    if not image_files:
+        logger.error("No images found in images_dir")
+        return False, "No images found"
+
+    mask_files = sorted(glob.glob(os.path.join(masks_dir, '*'))) if masks_dir and os.path.exists(masks_dir) else []
+    use_masks = len(mask_files) > 0
+    if use_masks and len(mask_files) != len(image_files):
+        logger.warning(f"Mismatch: {len(mask_files)} masks vs {len(image_files)} images")
+        use_masks = False
+
+    # Create feature directory
+    feature_dir = os.path.join(os.path.dirname(database_path), 'features')
+    os.makedirs(feature_dir, exist_ok=True)
+
+    # Process images with SuperPoint
+    keypoints_dict = {}
+    descriptors_dict = {}
+    image_sizes = {}
+    for img_path in image_files:
+        img_name = os.path.basename(img_path)
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            logger.error(f"Failed to load image: {img_path}")
+            continue
+        img_height, img_width = img.shape
+        image_sizes[img_name] = (img_width, img_height)
+
+        # Apply mask if available
+        mask = None
+        if use_masks:
+            mask_path = os.path.join(masks_dir, img_name.replace('.jpg', '.png'))
+            if os.path.exists(mask_path):
+                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if mask.shape != img.shape:
+                    logger.warning(f"Mask size mismatch for {img_name}, ignoring mask")
+                    mask = None
+                else:
+                    mask = (mask > 0).astype(np.uint8)
+
+        # Prepare image for SuperPoint
+        img_tensor = torch.from_numpy(img / 255.0).float()[None, None].to(device)
+        if mask is not None:
+            mask_tensor = torch.from_numpy(mask).float()[None, None].to(device)
+        else:
+            mask_tensor = None
+
+        # Run SuperPoint
+        with torch.no_grad():
+            pred = superpoint_model({'image': img_tensor})
+            keypoints = pred['keypoints'][0].cpu().numpy()
+            scores = pred['scores'][0].cpu().numpy()
+            descriptors = pred['descriptors'][0].cpu().numpy().T
+
+        if mask is not None:
+            # Filter keypoints by mask
+            mask_np = mask_tensor[0, 0].cpu().numpy()
+            valid = []
+            for kp in keypoints:
+                x, y = int(kp[0]), int(kp[1])
+                if 0 <= x < mask_np.shape[1] and 0 <= y < mask_np.shape[0] and mask_np[y, x] > 0:
+                    valid.append(True)
+                else:
+                    valid.append(False)
+            valid = np.array(valid)
+            keypoints = keypoints[valid]
+            scores = scores[valid]
+            descriptors = descriptors[valid]
+
+        # Store results
+        keypoints_dict[img_name] = np.hstack([keypoints, scores[:, None]])
+        descriptors_dict[img_name] = descriptors
+        logger.debug(f"Extracted {len(keypoints)} keypoints for {img_name}")
+
+    # Run vocabulary tree matching for loop closure
+    matches_dict = {}
+    if os.path.exists(vocab_tree_path):
+        try:
+            logger.debug("Running vocabulary tree matching for loop closure")
+            temp_db_path = os.path.join(feature_dir, 'temp.db')
+            shutil.copy(database_path, temp_db_path)
+            process = subprocess.Popen([
+                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
+                'colmap', 'vocab_tree_matcher',
+                '--database_path', temp_db_path,
+                '--VocabTreeMatching.vocab_tree_path', vocab_tree_path,
+                '--VocabTreeMatching.num_images', '50',
+                '--VocabTreeMatching.num_nearest_neighbors', '1',
+                '--VocabTreeMatching.num_checks', '512'
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate()
+            if process.returncode != 0:
+                logger.warning(f"Vocab tree matching failed: {stderr}")
+            else:
+                # Read matches from temporary database
+                conn = sqlite3.connect(temp_db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT pair_id, data FROM matches WHERE rows > 0")
+                for pair_id, data in cursor.fetchall():
+                    image_id1 = pair_id // 4294967296
+                    image_id2 = pair_id % 4294967296
+                    cursor.execute("SELECT name FROM images WHERE image_id = ?", (image_id1,))
+                    img1_name = cursor.fetchone()[0]
+                    cursor.execute("SELECT name FROM images WHERE image_id = ?", (image_id2,))
+                    img2_name = cursor.fetchone()[0]
+                    matches = np.frombuffer(data, dtype=np.uint32).reshape(-1, 2)
+                    matches_dict[(img1_name, img2_name)] = matches
+                conn.close()
+            os.remove(temp_db_path)
+        except Exception as e:
+            logger.warning(f"Vocab tree matching failed: {str(e)}")
+
+    # Perform SuperGlue matching (sequential and loop closure pairs)
+    overlap = 2
+    sequential_pairs = []
+    for i in range(len(image_files) - 1):
+        img1_name = os.path.basename(image_files[i])
+        for j in range(i + 1, min(i + overlap + 1, len(image_files))):
+            img2_name = os.path.basename(image_files[j])
+            sequential_pairs.append((img1_name, img2_name))
+
+    all_pairs = set(sequential_pairs)
+    all_pairs.update([(min(img1, img2), max(img1, img2)) for img1, img2 in matches_dict.keys()])
+
+    for img1_name, img2_name in all_pairs:
+        if img1_name not in keypoints_dict or img2_name not in keypoints_dict:
+            continue
+
+        # Prepare data for SuperGlue
+        kp1 = torch.from_numpy(keypoints_dict[img1_name][:, :2]).float().to(device)[None]
+        scores1 = torch.from_numpy(keypoints_dict[img1_name][:, 2]).float().to(device)[None]
+        desc1 = torch.from_numpy(descriptors_dict[img1_name]).float().to(device)[None]
+        kp2 = torch.from_numpy(keypoints_dict[img2_name][:, :2]).float().to(device)[None]
+        scores2 = torch.from_numpy(keypoints_dict[img2_name][:, 2]).float().to(device)[None]
+        desc2 = torch.from_numpy(descriptors_dict[img2_name]).float().to(device)[None]
+
+        data = {
+            'keypoints0': kp1,
+            'scores0': scores1,
+            'descriptors0': desc1,
+            'keypoints1': kp2,
+            'scores1': scores2,
+            'descriptors1': desc2,
+            'image0_size': torch.tensor([image_sizes[img1_name]], dtype=torch.float).to(device),
+            'image1_size': torch.tensor([image_sizes[img2_name]], dtype=torch.float).to(device)
+        }
+
+        # Run SuperGlue
+        with torch.no_grad():
+            pred = superglue_model(data)
+            matches = pred['matches0'][0].cpu().numpy()
+            valid = matches > -1
+            matches0 = np.where(valid)[0]
+            matches1 = matches[valid]
+
+        matches_dict[(img1_name, img2_name)] = np.vstack([matches0, matches1]).T
+        logger.debug(f"Found {len(matches0)} matches between {img1_name} and {img2_name}")
+
+    # Import into COLMAP database
+    try:
+        conn = sqlite3.connect(database_path)
+        cursor = conn.cursor()
+
+        # Get image IDs
+        cursor.execute("SELECT name, image_id FROM images")
+        image_id_map = {name: image_id for name, image_id in cursor.fetchall()}
+
+        # Import keypoints
+        for img_name, keypoints in keypoints_dict.items():
+            if img_name not in image_id_map:
+                logger.warning(f"Image {img_name} not in database")
+                continue
+            image_id = image_id_map[img_name]
+            num_keypoints = len(keypoints)
+            if num_keypoints == 0:
+                continue
+            keypoints_data = keypoints[:, :2].astype(np.float32).tobytes()
+            descriptors_data = descriptors_dict[img_name].astype(np.float32).tobytes()
+            cursor.execute(
+                "INSERT OR REPLACE INTO keypoints (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (image_id, num_keypoints, 2, keypoints_data)
+            )
+            cursor.execute(
+                "INSERT OR REPLACE INTO descriptors (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (image_id, num_keypoints, descriptors_dict[img_name].shape[1], descriptors_data)
+            )
+
+        # Import matches
+        for (img1_name, img2_name), matches in matches_dict.items():
+            if img1_name not in image_id_map or img2_name not in image_id_map:
+                logger.warning(f"Image pair {img1_name}, {img2_name} not in database")
+                continue
+            image_id1 = image_id_map[img1_name]
+            image_id2 = image_id_map[img2_name]
+            pair_id = image_id1 * 4294967296 + image_id2 if image_id1 < image_id2 else image_id2 * 4294967296 + image_id1
+            if len(matches) == 0:
+                continue
+            matches_data = matches.astype(np.uint32).tobytes()
+            cursor.execute(
+                "INSERT OR REPLACE INTO matches (pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (pair_id, len(matches), 2, matches_data)
+            )
+            cursor.execute(
+                "INSERT OR REPLACE INTO two_view_geometries (pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (pair_id, len(matches), 2, matches_data)
+            )
+
+        conn.commit()
+        conn.close()
+        logger.debug("Successfully imported SuperPoint/SuperGlue features and matches into database")
+        return True, ""
+    except Exception as e:
+        logger.error(f"Failed to import features/matches into database: {str(e)}")
+        return False, f"Database import failed: {str(e)}"
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
@@ -256,7 +483,6 @@ def process_video():
     logger.debug(f"Request files: {list(request.files.keys())}")
     logger.debug(f"Incoming form data: {request.form}")
 
-    # Initialize session and request ID
     session_id = request.form.get('session_id')
     if not session_id or session_id.strip() == '':
         session_id = str(uuid.uuid4())
@@ -267,28 +493,25 @@ def process_video():
     session[f'request_id_{session_id}'] = request_id
     logger.debug(f"Session state: request_id_{session_id} = {request_id}")
 
-    # Define directories
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
-    masks_dir = os.path.join(base_dir, 'masks')  # New directory for masks
+    masks_dir = os.path.join(base_dir, 'masks')
     database_path = os.path.join(base_dir, 'database.db')
     sparse_dir = os.path.join(base_dir, 'sparse')
     poses_dir = os.path.join(base_dir, 'poses')
     sparse_cubic_dir = os.path.join(base_dir, 'sparse-cubic')
 
-    # Clean up old requests
     if not cleanup_old_requests(request_id):
         logger.error("Failed to clean up old request directories")
         response = {"status": "error", "message": "Failed to clean up old request directories", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Create directories
     try:
         os.makedirs(video_dir, exist_ok=True)
         os.makedirs(images_dir, exist_ok=True)
-        os.makedirs(masks_dir, exist_ok=True)  # Create masks directory
+        os.makedirs(masks_dir, exist_ok=True)
         os.makedirs(sparse_dir, exist_ok=True)
         os.makedirs(poses_dir, exist_ok=True)
         os.makedirs(sparse_cubic_dir, exist_ok=True)
@@ -298,12 +521,10 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Check for video, images, or masks
     is_video = 'video' in request.files and request.files['video'].filename != ''
     image_files = request.files.getlist('images')
-    mask_files = request.files.getlist('masks')  # New: Get mask files
+    mask_files = request.files.getlist('masks')
 
-    # Validate inputs
     if not is_video and not image_files:
         logger.error("No video or images provided in request")
         response = {"status": "error", "message": "No video or images provided", "session_id": session_id}
@@ -324,7 +545,6 @@ def process_video():
     session[f'input_save_time_{session_id}'] = input_save_time
     logger.debug(f"Stored input_save_time for session_id {session_id}: {input_save_time}")
     if is_video:
-        # Handle video upload
         video = request.files['video']
         video_path = os.path.join(video_dir, video.filename)
         logger.debug(f"Saving video: {video_path}")
@@ -345,7 +565,6 @@ def process_video():
             logger.debug(f"Sending response: {response}")
             return response, 500
 
-        # Extract frames
         try:
             logger.debug("Extracting frames")
             process = subprocess.Popen([
@@ -373,7 +592,6 @@ def process_video():
             logger.debug(f"Sending response: {response}")
             return response, 500
     else:
-        # Handle chunked image and mask uploads
         for image in image_files:
             if image.filename == '':
                 continue
@@ -388,8 +606,6 @@ def process_video():
                 response = {"status": "error", "message": f"Failed to save image: {str(e)}", "session_id": session_id}
                 logger.debug(f"Sending response: {response}")
                 return response, 500
-
-        # Handle mask files
         for mask in mask_files:
             if mask.filename == '':
                 continue
@@ -404,9 +620,7 @@ def process_video():
                 response = {"status": "error", "message": f"Failed to save mask: {str(e)}", "session_id": session_id}
                 logger.debug(f"Sending response: {response}")
                 return response, 500
-
         logger.debug(f"Saved {len(image_files)} images and {len(mask_files)} masks for session {session_id}")
-
         if request.form.get('complete') != 'true':
             response = {
                 'status': 'partial',
@@ -416,7 +630,6 @@ def process_video():
             logger.debug(f"Sending response: {response}")
             return response, 200
 
-    # Check resources
     resource_ok, resource_message = check_resources(request_id)
     if not resource_ok:
         logger.error(f"Resource check failed: {resource_message}")
@@ -424,7 +637,6 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Create database
     try:
         logger.debug("Creating database")
         process = subprocess.Popen([
@@ -447,84 +659,32 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Check if masks exist
     mask_files = glob.glob(os.path.join(masks_dir, '*'))
     use_masks = len(mask_files) > 0
     if use_masks:
         logger.debug(f"Found {len(mask_files)} masks in {masks_dir}")
 
-    # Feature extraction with optional masking
+    # Run SuperPoint and SuperGlue with sequential matching and loop closure
     try:
-        logger.debug("Running feature extraction")
-        feature_extractor_cmd = [
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'feature_extractor',
-            '--database_path', database_path,
-            '--image_path', images_dir,
-            '--ImageReader.camera_model', 'SPHERE',
-            '--ImageReader.camera_params', '1,3520,1760',
-            '--ImageReader.single_camera', '1',
-            '--SiftExtraction.use_gpu', '1'
-            # '--SiftExtraction.gpu_index', '0',
-            # '--SiftExtraction.peak_threshold', '0.00001',
-            # '--SiftExtraction.max_num_features', '13000'
-            # '--SiftExtraction.estimate_affine_shape', '0',
-            # '--SiftExtraction.max_num_orientations', '3'
-        ]
-        if use_masks:
-            feature_extractor_cmd.extend(['--ImageReader.mask_path', masks_dir])
-        process = subprocess.Popen(
-            feature_extractor_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+        logger.debug("Running SuperPoint and SuperGlue")
+        success, error_message = run_superpoint_superglue(
+            images_dir,
+            database_path,
+            '/app/vocab_tree.bin',
+            masks_dir if use_masks else None
         )
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            logger.error(f"Feature extraction failed: {stderr}")
-            response = {"status": "error", "message": f"Feature extraction failed: {stderr} {stdout}", "session_id": session_id}
+        if not success:
+            logger.error(f"SuperPoint/SuperGlue processing failed: {error_message}")
+            response = {"status": "error", "message": f"SuperPoint/SuperGlue processing failed: {error_message}", "session_id": session_id}
             logger.debug(f"Sending response: {response}")
             return response, 500
-    except subprocess.TimeoutExpired:
-        logger.error("Feature extraction timed out")
-        response = {"status": "error", "message": "Feature extraction timed out", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"SuperPoint/SuperGlue processing failed: {str(e)}")
+        response = {"status": "error", "message": f"SuperPoint/SuperGlue processing failed: {str(e)}", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
     try:
-        logger.debug("Running feature matching")
-        process = subprocess.Popen([
-            'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-            'colmap', 'sequential_matcher',
-            '--database_path', database_path,
-            '--SequentialMatching.overlap', '2',
-            # '--SequentialMatching.quadratic_overlap', '0',
-            '--SequentialMatching.loop_detection', '1',
-            '--SequentialMatching.vocab_tree_path', '/app/vocab_tree.bin',
-            '--SequentialMatching.loop_detection_period', '40',
-            # '--SequentialMatching.loop_detection_num_images', '50',
-            # '--SequentialMatching.loop_detection_num_nearest_neighbors', '1',
-            # '--SequentialMatching.loop_detection_num_checks', '512',
-            # '--SequentialMatching.loop_detection_num_images_after_verification', '5',
-            # '--SequentialMatching.loop_detection_max_num_features', '-1',
-            '--SiftMatching.use_gpu', '1',
-            '--SiftMatching.gpu_index', '0'
-            # '--SiftMatching.min_num_inliers', '10'
-        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
-        if process.returncode != 0:
-            logger.error(f"Feature matching failed: {stderr}")
-            response = {"status": "error", "message": f"Feature matching failed: {stderr} {stdout}", "session_id": session_id}
-            logger.debug(f"Sending response: {response}")
-            return response, 500
-    except subprocess.TimeoutExpired:
-        logger.error("Feature matching timed out")
-        response = {"status": "error", "message": "Feature matching timed out", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
-
-    try:
-        logger.debug(f"Matching finished with : {stdout}")
         logger.debug("Running sparse reconstruction")
         process = subprocess.Popen([
             'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
@@ -532,15 +692,10 @@ def process_video():
             '--database_path', database_path,
             '--image_path', images_dir,
             '--output_path', sparse_dir,
-            # '--Mapper.min_num_matches', '10',
-            # '--Mapper.init_min_num_inliers', '30',
-            # '--Mapper.ba_global_max_num_iterations', '70',
-            # '--Mapper.multiple_models', '1',
             '--Mapper.ba_refine_focal_length', '0',
             '--Mapper.ba_refine_principal_point', '0',
             '--Mapper.ba_refine_extra_params', '0',
             '--Mapper.sphere_camera', '1'
-            # '--Mapper.ba_local_max_num_iterations', '100'
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
         if process.returncode != 0:
@@ -561,7 +716,7 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    try: 
+    try:
         logger.debug(f"Sparse finished with : {stdout}")
         logger.debug("Running cubic reprojection")
         process = subprocess.Popen([
@@ -583,7 +738,6 @@ def process_video():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Export sparse PLY and camera poses
     output_sparse_ply = os.path.join(base_dir, 'sparse.ply')
     poses_json_path = os.path.join(base_dir, 'camera_poses.json')
     success, error_message = export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, poses_json_path)
@@ -622,7 +776,6 @@ def process_dense():
         logger.debug(f"Sending response: {response}")
         return response, 400
 
-    # Define directories
     base_dir = os.path.join('/app/colmap_project', request_id)
     images_dir = os.path.join(base_dir, 'images')
     sparse_model_dir = os.path.join(base_dir, 'sparse', '0')
@@ -630,14 +783,12 @@ def process_dense():
     dense_base_dir = os.path.join(base_dir, 'dense_chunks')
     poses_dir = os.path.join(base_dir, 'poses')
 
-    # Verify required directories exist
     if not all(os.path.exists(d) for d in [base_dir, images_dir, sparse_model_dir, sparse_cubic_dir]):
         logger.error("Required project directories missing")
         response = {"status": "error", "message": "Project directories missing", "session_id": session_id}
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Create dense directory
     try:
         os.makedirs(dense_base_dir, exist_ok=True)
     except OSError as e:
@@ -646,7 +797,6 @@ def process_dense():
         logger.debug(f"Sending response: {response}")
         return response, 500
 
-    # Check resources
     resource_ok, resource_message = check_resources(request_id)
     if not resource_ok:
         logger.error(f"Resource check failed: {resource_message}")
@@ -838,12 +988,6 @@ def process_dense():
             stdout, stderr = process.communicate()
             if process.returncode != 0:
                 logger.error(f"Stereo fusion failed for chunk {idx}: {stderr} {stdout}")
-                logger.debug(f"Raw stderr content: {repr(stderr)}")
-                if not stderr:
-                    logger.error(f"No stderr output from stereo fusion for chunk {idx}")
-                logger.debug(f"stdout content: {repr(stdout)}")
-                for handler in logger.handlers:
-                    handler.flush()
                 response = {"status": "error", "message": f"Stereo fusion failed for chunk {idx}: {stderr}", "session_id": session_id}
                 logger.debug(f"Sending response: {response}")
                 return response, 500
