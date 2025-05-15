@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch and dependencies for SuperPoint/SuperGlue
-RUN pip3 install torch==1.12.1+cu117 torchvision==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 
 # Clone and install SuperPoint and SuperGlue
 RUN git clone https://github.com/magicleap/SuperPointPretrainedNetwork.git /superpoint && \
@@ -54,7 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies
 RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy scipy opencv-contrib-python \
-    torch==1.12.1+cu117 torchvision==0.13.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+    torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 
 # Copy SuperPoint and SuperGlue models
 COPY --from=builder /app/superpoint_superglue /app/superpoint_superglue
