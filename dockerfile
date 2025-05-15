@@ -28,7 +28,7 @@ RUN git clone https://github.com/Xbbei/super-colmap.git /super-colmap && \
     cp /superglue/models/superglue.py /app/superpoint_superglue/models/superglue.py && \
     cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
     wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superpoint_v1.pth -O /app/superpoint_superglue/models/weights/superpoint_v1.pth && \
-    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superglue_outdoor.pth -O /app/superpoint_superglue/models/weights/superglue_outdoor.pth && \
+    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superglue_indoor.pth -O /app/superpoint_superglue/models/weights/superglue_indoor.pth && \
     # Copy superpoint_v1.pth to the hardcoded path expected by superpoint.py
     cp /app/superpoint_superglue/models/weights/superpoint_v1.pth /app/superpoint_superglue/models/superpoint_v1.pth && \
     rm -rf /super-colmap /superglue
@@ -49,7 +49,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libboost-program-options1.74.0 libboost-filesystem1.74.0 libboost-graph1.74.0 libboost-system1.74.0 \
+    libboost-program-options1.74.0 libboost-filesystem-dev libboost-graph-dev libboost-system-dev \
     libc6 libceres2 libfreeimage3 libgcc-s1 libgflags2.2 \
     libgl1 libglew2.2 libgoogle-glog0v5 libqt5core5a libqt5gui5 libqt5widgets5 \
     libcurl4 python3 python3-pip xvfb libx11-6 libxext6 libxrender1 x11-utils \
