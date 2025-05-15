@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy scipy opencv-contrib-python \
+RUN pip3 install flask psutil gunicorn GPUtil plyfile pycolmap numpy==1.26.4 scipy opencv-contrib-python \
     torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
 
 # Copy SuperPoint and SuperGlue models
