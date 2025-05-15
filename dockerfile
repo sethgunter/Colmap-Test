@@ -21,9 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip3 install kornia==0.6.8 h5py py360convert
 
-# Clone and install HLoc
+# Clone and install HLoc with modified requirements
 RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
+    sed -i '/lightglue/d' requirements.txt && \
     pip3 install . && \
     rm -rf /hloc
 
