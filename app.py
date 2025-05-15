@@ -249,13 +249,14 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
     superpoint_config = {
         'nms_radius': 4,
         'keypoint_threshold': 0.005,
-        'max_keypoints': 13000
+        'max_keypoints': 13000,
+        'weight_path': '/app/superpoint_superglue/models/weights/superpoint_v1.pth'
     }
     superpoint_model = SuperPoint(superpoint_config).eval().to(device)
 
     # Initialize SuperGlue
     superglue_config = {
-        'weights': 'outdoor',
+        'weights_path': '/app/superpoint_superglue/models/weights/superglue_outdoor.pth',
         'sinkhorn_iterations': 20,
         'match_threshold': 0.2
     }

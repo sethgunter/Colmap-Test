@@ -23,11 +23,12 @@ RUN pip3 install torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url
 # Clone and install SuperPoint (from super-colmap) and SuperGlue
 RUN git clone https://github.com/Xbbei/super-colmap.git /super-colmap && \
     git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git /superglue && \
-    mkdir -p /app/superpoint_superglue/models && \
+    mkdir -p /app/superpoint_superglue/models/weights && \
     cp /super-colmap/superpoint.py /app/superpoint_superglue/models/superpoint.py && \
     cp /superglue/models/superglue.py /app/superpoint_superglue/models/superglue.py && \
     cp -r /superglue/models/utils.py /app/superpoint_superglue/models/ && \
-    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superpoint_v1.pth -O /app/superpoint_superglue/models/superpoint_v1.pth && \
+    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superpoint_v1.pth -O /app/superpoint_superglue/models/weights/superpoint_v1.pth && \
+    wget https://github.com/magicleap/SuperGluePretrainedNetwork/raw/master/models/weights/superglue_outdoor.pth -O /app/superpoint_superglue/models/weights/superglue_outdoor.pth && \
     rm -rf /super-colmap /superglue
 
 # Build and install SphereSfM
