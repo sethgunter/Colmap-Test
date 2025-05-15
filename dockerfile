@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     qtbase5-dev libqt5opengl5-dev libcgal-dev libceres-dev libcurl4-openssl-dev \
     python3 python3-pip python3-dev \
     cuda-cudart-dev-11-7 cuda-libraries-dev-11-7 cuda-nvcc-11-7 cuda-compiler-11-7 \
-    ffmpeg lsof wget && \
+    ffmpeg lsof wget sqlite3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch and dependencies for SuperPoint/SuperGlue
@@ -49,11 +49,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libboost-program-options1.74.0 libboost-filesystem-dev libboost-graph-dev libboost-system-dev \
+    libboost-program-options1.74.0 libboost-filesystem1.74.0 libboost-graph1.74.0 libboost-system1.74.0 \
     libc6 libceres2 libfreeimage3 libgcc-s1 libgflags2.2 \
     libgl1 libglew2.2 libgoogle-glog0v5 libqt5core5a libqt5gui5 libqt5widgets5 \
     libcurl4 python3 python3-pip xvfb libx11-6 libxext6 libxrender1 x11-utils \
-    cuda-cudart-11-7 cuda-libraries-11-7 ffmpeg lsof && \
+    cuda-cudart-11-7 cuda-libraries-11-7 ffmpeg lsof sqlite3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -78,7 +78,6 @@ RUN chmod 644 /app/vocab_tree.bin
 RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/index.html
 
 # Set environment variables for CUDA
-# Note: Requires NVIDIA Container Toolkit and --gpus all flag when running container for GPU support
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 ENV PYTHONPATH=/app:$PYTHONPATH

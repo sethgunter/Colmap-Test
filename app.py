@@ -239,6 +239,9 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
 # Note: Only the run_superpoint_superglue function is shown for brevity.
 # Replace this function in your existing app.py, keeping all other code unchanged.
 
+# Note: Only the run_superpoint_superglue function is shown.
+# Replace this function in your existing app.py, keeping all other code unchanged.
+
 def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
     """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching."""
     try:
@@ -374,9 +377,10 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         width = 1920
         height = 960
         params = b''  # SPHERE model has no parameters
+        prior_focal_length = 1920.0  # Default focal length (image width)
         cursor.execute(
-            "INSERT INTO cameras (model, width, height, params) VALUES (?, ?, ?, ?)",
-            (camera_model, width, height, params)
+            "INSERT INTO cameras (model, width, height, params, prior_focal_length) VALUES (?, ?, ?, ?, ?)",
+            (camera_model, width, height, params, prior_focal_length)
         )
         camera_id = cursor.lastrowid
         logger.debug(f"Added camera ID: {camera_id}")
