@@ -381,8 +381,9 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         camera_model = 10  # SPHERE model ID
         width = 1920
         height = 960
-        params = b''  # SPHERE model has no parameters
         prior_focal_length = 1920.0  # Default focal length (image width)
+        # SPHERE model requires 12 parameters: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+        params = np.array([1920.0, 1920.0, 960.0, 480.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64).tobytes()
         cursor.execute(
             "INSERT INTO cameras (model, width, height, params, prior_focal_length) VALUES (?, ?, ?, ?, ?)",
             (camera_model, width, height, params, prior_focal_length)
