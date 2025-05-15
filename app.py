@@ -234,13 +234,14 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
     return True, ""
 
 def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_dir=None):
-    """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching and loop closure."""
+    """Run SuperPoint for feature detection and SuperGlue for feature matching with sequential matching."""
     try:
         from superpoint_superglue.models.superpoint import SuperPoint
         from superpoint_superglue.models.superglue import SuperGlue
+        from pycolmap import Database as COLMAPDatabase
     except ImportError as e:
-        logger.error(f"Failed to import SuperPoint/SuperGlue: {str(e)}")
-        return False, f"SuperPoint/SuperGlue import failed: {str(e)}"
+        logger.error(f"Failed to import SuperPoint/SuperGlue or COLMAPDatabase: {str(e)}")
+        return False, f"Import failed: {str(e)}"
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.debug(f"Using device: {device}")
@@ -256,7 +257,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
 
     # Initialize SuperGlue
     superglue_config = {
-        'weights_path': '/app/superpoint_superglue/models/weights/superglue_outdoor.pth',
+        'weights_path': '/app/superpoint_superglue/models/weights/superglue_indoor.pth',
         'sinkhorn_iterations': 20,
         'match_threshold': 0.2
     }
@@ -282,6 +283,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
     keypoints_dict = {}
     descriptors_dict = {}
     image_sizes = {}
+    images_data = {}
     for img_path in image_files:
         img_name = os.path.basename(img_path)
         img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
@@ -290,6 +292,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             continue
         img_height, img_width = img.shape
         image_sizes[img_name] = (img_width, img_height)
+        images_data[img_name] = img
 
         # Apply mask if available
         mask = None
@@ -337,100 +340,28 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         descriptors_dict[img_name] = descriptors
         logger.debug(f"Extracted {len(keypoints)} keypoints for {img_name}")
 
-    # Run vocabulary tree matching for loop closure
-    matches_dict = {}
-    if os.path.exists(vocab_tree_path):
-        try:
-            logger.debug("Running vocabulary tree matching for loop closure")
-            temp_db_path = os.path.join(feature_dir, 'temp.db')
-            shutil.copy(database_path, temp_db_path)
-            process = subprocess.Popen([
-                'xvfb-run', '--auto-servernum', '--server-args', '-screen 0 1024x768x24',
-                'colmap', 'vocab_tree_matcher',
-                '--database_path', temp_db_path,
-                '--VocabTreeMatching.vocab_tree_path', vocab_tree_path,
-                '--VocabTreeMatching.num_images', '50',
-                '--VocabTreeMatching.num_nearest_neighbors', '1',
-                '--VocabTreeMatching.num_checks', '512'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            stdout, stderr = process.communicate()
-            if process.returncode != 0:
-                logger.warning(f"Vocab tree matching failed: {stderr}")
-            else:
-                # Read matches from temporary database
-                conn = sqlite3.connect(temp_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT pair_id, data FROM matches WHERE rows > 0")
-                for pair_id, data in cursor.fetchall():
-                    image_id1 = pair_id // 4294967296
-                    image_id2 = pair_id % 4294967296
-                    cursor.execute("SELECT name FROM images WHERE image_id = ?", (image_id1,))
-                    img1_name = cursor.fetchone()[0]
-                    cursor.execute("SELECT name FROM images WHERE image_id = ?", (image_id2,))
-                    img2_name = cursor.fetchone()[0]
-                    matches = np.frombuffer(data, dtype=np.uint32).reshape(-1, 2)
-                    matches_dict[(img1_name, img2_name)] = matches
-                conn.close()
-            os.remove(temp_db_path)
-        except Exception as e:
-            logger.warning(f"Vocab tree matching failed: {str(e)}")
-
-    # Perform SuperGlue matching (sequential and loop closure pairs)
-    overlap = 2
-    sequential_pairs = []
-    for i in range(len(image_files) - 1):
-        img1_name = os.path.basename(image_files[i])
-        for j in range(i + 1, min(i + overlap + 1, len(image_files))):
-            img2_name = os.path.basename(image_files[j])
-            sequential_pairs.append((img1_name, img2_name))
-
-    all_pairs = set(sequential_pairs)
-    all_pairs.update([(min(img1, img2), max(img1, img2)) for img1, img2 in matches_dict.keys()])
-
-    for img1_name, img2_name in all_pairs:
-        if img1_name not in keypoints_dict or img2_name not in keypoints_dict:
-            continue
-
-        # Prepare data for SuperGlue
-        kp1 = torch.from_numpy(keypoints_dict[img1_name][:, :2]).float().to(device)[None]
-        scores1 = torch.from_numpy(keypoints_dict[img1_name][:, 2]).float().to(device)[None]
-        desc1 = torch.from_numpy(descriptors_dict[img1_name]).float().to(device)[None]
-        kp2 = torch.from_numpy(keypoints_dict[img2_name][:, :2]).float().to(device)[None]
-        scores2 = torch.from_numpy(keypoints_dict[img2_name][:, 2]).float().to(device)[None]
-        desc2 = torch.from_numpy(descriptors_dict[img2_name]).float().to(device)[None]
-
-        data = {
-            'keypoints0': kp1,
-            'scores0': scores1,
-            'descriptors0': desc1,
-            'keypoints1': kp2,
-            'scores1': scores2,
-            'descriptors1': desc2,
-            'image0_size': torch.tensor([image_sizes[img1_name]], dtype=torch.float).to(device),
-            'image1_size': torch.tensor([image_sizes[img2_name]], dtype=torch.float).to(device)
-        }
-
-        # Run SuperGlue
-        with torch.no_grad():
-            pred = superglue_model(data)
-            matches = pred['matches0'][0].cpu().numpy()
-            valid = matches > -1
-            matches0 = np.where(valid)[0]
-            matches1 = matches[valid]
-
-        matches_dict[(img1_name, img2_name)] = np.vstack([matches0, matches1]).T
-        logger.debug(f"Found {len(matches0)} matches between {img1_name} and {img2_name}")
-
-    # Import into COLMAP database
+    # Create COLMAP database
     try:
-        conn = sqlite3.connect(database_path)
-        cursor = conn.cursor()
+        db = COLMAPDatabase.connect(database_path)
+        db.create_tables()
 
-        # Get image IDs
-        cursor.execute("SELECT name, image_id FROM images")
-        image_id_map = {name: image_id for name, image_id in cursor.fetchall()}
+        # Add camera (SPHERE model for equirectangular frames)
+        camera_model = 10  # SPHERE model ID in COLMAP
+        width = 1920  # Adjust based on your images
+        height = 960
+        params = np.array([])  # SPHERE model has no parameters
+        camera_id = db.add_camera(camera_model, width, height, params)
+        logger.debug(f"Added camera ID: {camera_id}")
 
-        # Import keypoints
+        # Add images
+        image_id_map = {}
+        for img_path in image_files:
+            img_name = os.path.basename(img_path)
+            image_id = db.add_image(img_name, camera_id)
+            image_id_map[img_name] = image_id
+            logger.debug(f"Added image {img_name} with ID {image_id}")
+
+        # Add keypoints
         for img_name, keypoints in keypoints_dict.items():
             if img_name not in image_id_map:
                 logger.warning(f"Image {img_name} not in database")
@@ -438,45 +369,95 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             image_id = image_id_map[img_name]
             num_keypoints = len(keypoints)
             if num_keypoints == 0:
+                logger.warning(f"No keypoints for {img_name}")
                 continue
-            keypoints_data = keypoints[:, :2].astype(np.float32).tobytes()
-            descriptors_data = descriptors_dict[img_name].astype(np.float32).tobytes()
-            cursor.execute(
-                "INSERT OR REPLACE INTO keypoints (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (image_id, num_keypoints, 2, keypoints_data)
-            )
-            cursor.execute(
-                "INSERT OR REPLACE INTO descriptors (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (image_id, num_keypoints, descriptors_dict[img_name].shape[1], descriptors_data)
-            )
+            keypoints_data = keypoints[:, :2].astype(np.float32)
+            db.add_keypoints(image_id, keypoints_data)
+            descriptors_data = descriptors_dict[img_name].astype(np.float32)
+            db.add_descriptors(image_id, descriptors_data)
+            logger.debug(f"Added {num_keypoints} keypoints for {img_name}")
 
-        # Import matches
+        # Perform SuperGlue matching (sequential pairs)
+        matches_dict = {}
+        overlap = 2
+        sequential_pairs = []
+        for i in range(len(image_files) - 1):
+            img1_name = os.path.basename(image_files[i])
+            for j in range(i + 1, min(i + overlap + 1, len(image_files))):
+                img2_name = os.path.basename(image_files[j])
+                sequential_pairs.append((img1_name, img2_name))
+
+        for img1_name, img2_name in sequential_pairs:
+            if img1_name not in keypoints_dict or img2_name not in keypoints_dict:
+                logger.warning(f"Skipping pair {img1_name}, {img2_name}: missing keypoints")
+                continue
+
+            try:
+                kp1 = torch.from_numpy(keypoints_dict[img1_name][:, :2]).float().to(device)[None]
+                scores1 = torch.from_numpy(keypoints_dict[img1_name][:, 2]).float().to(device)[None]
+                desc1 = torch.from_numpy(descriptors_dict[img1_name]).float().to(device)[None]
+                kp2 = torch.from_numpy(keypoints_dict[img2_name][:, :2]).float().to(device)[None]
+                scores2 = torch.from_numpy(keypoints_dict[img2_name][:, 2]).float().to(device)[None]
+                desc2 = torch.from_numpy(descriptors_dict[img2_name]).float().to(device)[None]
+
+                # Load images for SuperGlue
+                img1 = images_data[img1_name]
+                img2 = images_data[img2_name]
+                img1_tensor = torch.from_numpy(img1 / 255.0).float()[None, None].to(device)
+                img2_tensor = torch.from_numpy(img2 / 255.0).float()[None, None].to(device)
+
+                data = {
+                    'keypoints0': kp1,
+                    'scores0': scores1,
+                    'descriptors0': desc1,
+                    'keypoints1': kp2,
+                    'scores1': scores2,
+                    'descriptors1': desc2,
+                    'image0_size': torch.tensor([image_sizes[img1_name]], dtype=torch.float).to(device),
+                    'image1_size': torch.tensor([image_sizes[img2_name]], dtype=torch.float).to(device),
+                    'image0': img1_tensor,
+                    'image1': img2_tensor
+                }
+
+                # Run SuperGlue
+                with torch.no_grad():
+                    pred = superglue_model(data)
+                    matches = pred['matches0'][0].cpu().numpy()
+                    valid = matches > -1
+                    matches0 = np.where(valid)[0]
+                    matches1 = matches[valid]
+
+                matches_dict[(img1_name, img2_name)] = np.vstack([matches0, matches1]).T
+                logger.debug(f"Found {len(matches0)} matches between {img1_name} and {img2_name}")
+            except Exception as e:
+                logger.error(f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}")
+                db.close()
+                return False, f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}"
+
+        # Add matches and two-view geometry
         for (img1_name, img2_name), matches in matches_dict.items():
             if img1_name not in image_id_map or img2_name not in image_id_map:
                 logger.warning(f"Image pair {img1_name}, {img2_name} not in database")
                 continue
             image_id1 = image_id_map[img1_name]
             image_id2 = image_id_map[img2_name]
-            pair_id = image_id1 * 4294967296 + image_id2 if image_id1 < image_id2 else image_id2 * 4294967296 + image_id1
             if len(matches) == 0:
+                logger.warning(f"No matches for pair {img1_name}, {img2_name}")
                 continue
-            matches_data = matches.astype(np.uint32).tobytes()
-            cursor.execute(
-                "INSERT OR REPLACE INTO matches (pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (pair_id, len(matches), 2, matches_data)
-            )
-            cursor.execute(
-                "INSERT OR REPLACE INTO two_view_geometries (pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
-                (pair_id, len(matches), 2, matches_data)
-            )
+            db.add_matches(image_id1, image_id2, matches)
+            db.add_two_view_geometry(image_id1, image_id2, matches)
+            logger.debug(f"Added matches for pair {image_id1}, {image_id2}")
 
-        conn.commit()
-        conn.close()
-        logger.debug("Successfully imported SuperPoint/SuperGlue features and matches into database")
+        # Commit and close database
+        db.commit()
+        db.close()
+        logger.debug("Successfully created and populated COLMAP database")
         return True, ""
     except Exception as e:
-        logger.error(f"Failed to import features/matches into database: {str(e)}")
-        return False, f"Database import failed: {str(e)}"
+        logger.error(f"Failed to create/populate database: {str(e)}")
+        if 'db' in locals():
+            db.close()
+        return False, f"Database creation failed: {str(e)}"
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
@@ -665,7 +646,7 @@ def process_video():
     if use_masks:
         logger.debug(f"Found {len(mask_files)} masks in {masks_dir}")
 
-    # Run SuperPoint and SuperGlue with sequential matching and loop closure
+    # Run SuperPoint and SuperGlue with sequential matching
     try:
         logger.debug("Running SuperPoint and SuperGlue")
         success, error_message = run_superpoint_superglue(
