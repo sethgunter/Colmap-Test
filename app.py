@@ -243,6 +243,7 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         from superpoint_superglue.models.superglue import SuperGlue
         import pycolmap
         import sqlite3
+        import numpy as np
     except ImportError as e:
         logger.error(f"Failed to import SuperPoint/SuperGlue or pycolmap: {str(e)}")
         return False, f"Import failed: {str(e)}"
@@ -371,9 +372,8 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
         logger.error("Database creation timed out")
         return False, "Database creation timed out"
 
-    # Add data to database using SQLite and pycolmap
+    # Add data to database using SQLite
     try:
-        # Add camera and images via SQLite
         conn = sqlite3.connect(database_path)
         cursor = conn.cursor()
 
@@ -401,14 +401,6 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             image_id = cursor.lastrowid
             image_id_map[img_name] = image_id
             logger.debug(f"Added image {img_name} with ID {image_id}")
-
-        conn.commit()
-        conn.close()
-        logger.debug("SQLite database committed")
-
-        # Use pycolmap for keypoints, descriptors, matches
-        db = pycolmap.Database(database_path)
-        logger.debug(f"Opened pycolmap database: {database_path}")
 
         # Perform SuperGlue matching (sequential pairs)
         matches_dict = {}
@@ -470,10 +462,10 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
                 logger.debug(f"Found {len(matches0)} matches between {img1_name} and {img2_name}")
             except Exception as e:
                 logger.error(f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}")
-                db.close()
+                conn.close()
                 return False, f"SuperGlue failed for pair {img1_name}, {img2_name}: {str(e)}"
 
-        # Add keypoints
+        # Add keypoints and descriptors using SQLite
         for img_name, keypoints in keypoints_dict.items():
             if img_name not in image_id_map:
                 logger.warning(f"Image {img_name} not in database")
@@ -483,13 +475,24 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             if num_keypoints == 0:
                 logger.warning(f"No keypoints for {img_name}")
                 continue
-            keypoints_data = keypoints[:, :2].astype(np.float32)
-            descriptors_data = descriptors_dict[img_name].astype(np.float32)
-            db.add_keypoints(image_id, keypoints_data)
-            db.add_descriptors(image_id, descriptors_data)
-            logger.debug(f"Added {num_keypoints} keypoints for {img_name} to database")
+            keypoints_data = keypoints[:, :2].astype(np.float32)  # Shape: [num_keypoints, 2]
+            scores = keypoints[:, 2].astype(np.float32)  # Shape: [num_keypoints]
+            descriptors_data = descriptors_dict[img_name].astype(np.float32)  # Shape: [256, num_keypoints]
+            # Keypoints table: (image_id, rows, cols, data)
+            keypoints_blob = np.concatenate([keypoints_data, np.zeros((num_keypoints, 1), dtype=np.float32), scores[:, None]], axis=1).tobytes()  # COLMAP expects [x, y, scale, orientation]
+            cursor.execute(
+                "INSERT INTO keypoints (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (image_id, num_keypoints, 4, keypoints_blob)
+            )
+            # Descriptors table: (image_id, rows, cols, data)
+            descriptors_blob = descriptors_data.T.tobytes()  # Shape: [num_keypoints, 256]
+            cursor.execute(
+                "INSERT INTO descriptors (image_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (image_id, num_keypoints, 256, descriptors_blob)
+            )
+            logger.debug(f"Added {num_keypoints} keypoints and descriptors for {img_name} to database")
 
-        # Add matches and two-view geometry
+        # Add matches using SQLite
         for (img1_name, img2_name), matches in matches_dict.items():
             if img1_name not in image_id_map or img2_name not in image_id_map:
                 logger.warning(f"Image pair {img1_name}, {img2_name} not in database")
@@ -499,17 +502,28 @@ def run_superpoint_superglue(images_dir, database_path, vocab_tree_path, masks_d
             if len(matches) == 0:
                 logger.warning(f"No matches for pair {img1_name}, {img2_name}")
                 continue
-            db.add_matches(image_id1, image_id2, matches)
-            db.add_two_view_geometry(image_id1, image_id2, matches)
+            # Matches table: (image_id1, image_id2, rows, cols, data)
+            pair_id = min(image_id1, image_id2) * 2147483647 + max(image_id1, image_id2)  # COLMAP pair_id formula
+            matches_blob = matches.astype(np.uint32).tobytes()
+            cursor.execute(
+                "INSERT INTO matches (pair_id, rows, cols, data) VALUES (?, ?, ?, ?)",
+                (pair_id, matches.shape[0], 2, matches_blob)
+            )
+            # Two-view geometry table: (image_id1, image_id2, matches, config, F, E, H)
+            cursor.execute(
+                "INSERT INTO two_view_geometries (pair_id, rows, cols, data, config, F, E, H) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (pair_id, matches.shape[0], 2, matches_blob, 2, b'', b'', b'')  # Minimal config, empty matrices
+            )
             logger.debug(f"Added matches for pair {image_id1}, {image_id2} to database")
 
-        db.close()
-        logger.debug("Successfully populated COLMAP database")
+        conn.commit()
+        conn.close()
+        logger.debug("SQLite database committed and closed")
         return True, ""
     except Exception as e:
         logger.error(f"Failed to populate database: {str(e)}")
-        if 'db' in locals():
-            db.close()
+        if 'conn' in locals():
+            conn.close()
         return False, f"Database population failed: {str(e)}"
 
 @app.route('/process-video', methods=['POST'])
