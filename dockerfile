@@ -47,13 +47,13 @@ FROM nvidia/cuda:${CUDA_VERSION}-cudnn8-runtime-ubuntu${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install runtime dependencies
+# Install runtime dependencies, including git
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-program-options1.74.0 libboost-filesystem1.74.0 libboost-graph1.74.0 libboost-system1.74.0 \
     libc6 libceres2 libfreeimage3 libgcc-s1 libgflags2.2 \
     libgl1 libglew2.2 libgoogle-glog0v5 libqt5core5a libqt5gui5 libqt5widgets5 \
     libcurl4 python3 python3-pip python3-venv xvfb libx11-6 libxext6 libxrender1 x11-utils \
-    cuda-cudart-11-7 cuda-libraries-11-7 ffmpeg lsof sqlite3 && \
+    cuda-cudart-11-7 cuda-libraries-11-7 ffmpeg lsof sqlite3 git && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
