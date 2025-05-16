@@ -25,12 +25,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
-# Clone and install HLoc from master branch
+# Clone and install HLoc from master branch, include third_party in PYTHONPATH
 RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
     git checkout master && \
     sed -i '/lightglue/d' requirements.txt && \
     pip install --no-cache-dir . && \
+    export PYTHONPATH="/hloc/third_party:$PYTHONPATH" && \
     rm -rf /hloc
 
 # Build and install COLMAP
@@ -65,12 +66,13 @@ RUN pip install --no-cache-dir flask psutil gunicorn GPUtil plyfile pycolmap num
     torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
-# Install HLoc from master branch in runtime stage
+# Install HLoc from master branch in runtime stage, include third_party in PYTHONPATH
 RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
     git checkout master && \
     sed -i '/lightglue/d' requirements.txt && \
     pip install --no-cache-dir . && \
+    export PYTHONPATH="/hloc/third_party:$PYTHONPATH" && \
     rm -rf /hloc
 
 # Copy COLMAP installation
@@ -90,7 +92,7 @@ RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/in
 # Set environment variables for CUDA
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
-ENV PYTHONPATH=/app:/
+ENV PYTHONPATH=/app:/hloc/third_party:$PYTHONPATH
 
 # Expose port
 EXPOSE 8080
