@@ -333,20 +333,30 @@ def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=8):
 
 def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir=None):
     """Run HLoc with SuperPoint+SuperGlue for feature extraction and matching."""
+    import traceback
     try:
         from hloc import extract_features, match_features, reconstruction
         from hloc.utils import base_model
+        logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
         return False, f"HLoc import failed: {str(e)}"
+
+    # Log input parameters
+    logger.debug(f"run_hloc inputs: images_dir={images_dir}, database_path={database_path}, "
+                 f"output_dir={output_dir}, mapping_json_path={mapping_json_path}, masks_dir={masks_dir}")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.debug(f"Using device: {device}")
 
     # Load mapping of equirectangular to perspective images and masks
-    with open(mapping_json_path, 'r') as f:
-        eq_to_persp = json.load(f)
-    logger.debug(f"Loaded mapping with {len(eq_to_persp)} equirectangular images")
+    try:
+        with open(mapping_json_path, 'r') as f:
+            eq_to_persp = json.load(f)
+        logger.debug(f"Loaded mapping with {len(eq_to_persp)} equirectangular images")
+    except Exception as e:
+        logger.error(f"Failed to load mapping JSON: {str(e)}")
+        return False, f"Failed to load mapping JSON: {str(e)}"
 
     # Configure SuperPoint
     superpoint_conf = {
@@ -376,42 +386,54 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
 
     # Extract features
     feature_path = os.path.join(output_dir, 'features', 'superpoint.h5')
-    os.makedirs(os.path.dirname(feature_path), exist_ok=True)
+    feature_dir = os.path.dirname(feature_path)
+    os.makedirs(feature_dir, exist_ok=True)
+    logger.debug(f"Starting feature extraction: feature_path={feature_path}, feature_dir={feature_dir}")
     try:
         extract_features.main(
             conf=superpoint_conf,
             image_dir=Path(images_dir),
-            export_dir=Path(os.path.dirname(feature_path))
+            export_dir=Path(feature_dir)
         )
         logger.debug(f"Feature extraction completed: {feature_path}")
     except Exception as e:
-        logger.error(f"Feature extraction failed: {str(e)}")
+        logger.error(f"Feature extraction failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Feature extraction failed: {str(e)}"
 
     # Generate matching pairs (intra-image and sequential)
     image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
     pairs_path = os.path.join(output_dir, 'pairs.txt')
-    generate_image_pairs(image_list, eq_to_persp, pairs_path)
+    logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
+    try:
+        generate_image_pairs(image_list, eq_to_persp, pairs_path)
+        logger.debug(f"Generated pairs at {pairs_path}")
+    except Exception as e:
+        logger.error(f"Pair generation failed: {str(e)}\n{traceback.format_exc()}")
+        return False, f"Pair generation failed: {str(e)}"
 
     # Perform matching
     match_path = os.path.join(output_dir, 'matches', 'superglue.h5')
-    os.makedirs(os.path.dirname(match_path), exist_ok=True)
+    match_dir = os.path.dirname(match_path)
+    os.makedirs(match_dir, exist_ok=True)
+    logger.debug(f"Starting matching: match_path={match_path}, match_dir={match_dir}")
     try:
         match_features.main(
             conf=superglue_conf,
             pairs=Path(pairs_path),
             features=Path(feature_path),
-            export_dir=Path(os.path.dirname(match_path))
+            export_dir=Path(match_dir)
         )
         logger.debug(f"Matching completed: {match_path}")
     except Exception as e:
-        logger.error(f"Matching failed: {str(e)}")
+        logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
     # Run SfM with COLMAP
+    sfm_dir = os.path.join(output_dir, 'sfm')
+    logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
         model = reconstruction.main(
-            output_dir=Path(os.path.join(output_dir, 'sfm')),
+            output_dir=Path(sfm_dir),
             image_dir=Path(images_dir),
             pairs=Path(pairs_path),
             features=Path(feature_path),
@@ -422,11 +444,12 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"
             }
         )
-        logger.debug(f"SfM completed: {output_dir}/sfm")
+        logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
-        logger.error(f"SfM failed: {str(e)}")
+        logger.error(f"SfM failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"SfM failed: {str(e)}"
 
+    logger.debug("HLoc processing completed successfully")
     return True, ""
 
 @app.route('/process-video', methods=['POST'])
