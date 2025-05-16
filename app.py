@@ -19,7 +19,7 @@ import cv2
 import torch
 import sqlite3
 from pathlib import Path
-import py360convert  # For equirectangular to perspective conversion
+import py360convert
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024
@@ -248,7 +248,6 @@ def split_equirectangular_image(image_path, output_dir, num_views=8, fov_deg=50,
         h, w = img.shape[:2]
         if w != 2 * h:
             logger.warning(f"Image {image_path} is not 2:1 aspect ratio ({w}x{h})")
-        # Convert to perspective images
         output_paths = []
         for i in range(num_views):
             yaw = (360.0 / num_views) * i
@@ -281,7 +280,6 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, o
         h, w = mask.shape
         if w != 2 * h:
             logger.warning(f"Mask {mask_path} is not 2:1 aspect ratio ({w}x{h})")
-        # Convert to perspective masks
         output_paths = []
         for i in range(num_views):
             yaw = (360.0 / num_views) * i
@@ -292,7 +290,6 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, o
                 v_deg=0,
                 out_hw=(output_size, output_size)
             )
-            # Ensure binary mask (0 or 255)
             perspective_mask = (perspective_mask > 0).astype(np.uint8) * 255
             output_path = os.path.join(
                 output_dir,
@@ -306,10 +303,38 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, o
         logger.error(f"Failed to split equirectangular mask {mask_path}: {str(e)}")
         return False, []
 
+def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=8):
+    """Generate intra-image and sequential image pairs for matching, only for close images."""
+    pairs = []
+    for eq_img, data in eq_to_persp.items():
+        persp_imgs = data['images']
+        # Intra-image matching: connect each view to its neighbors
+        for i in range(num_views):
+            view_i = persp_imgs[i]
+            view_prev = persp_imgs[(i - 1) % num_views]
+            view_next = persp_imgs[(i + 1) % num_views]
+            pairs.append((view_i, view_prev))
+            pairs.append((view_i, view_next))
+        # Sequential matching: connect to previous and next equirectangular images
+        eq_idx = int(eq_img.split('_')[1].split('.')[0])  # e.g., frame_0001.jpg -> 1
+        for offset in [-1, 1]:  # Only pair with immediate neighbors (±1)
+            neighbor_idx = eq_idx + offset
+            neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
+            if neighbor_img in eq_to_persp:
+                for i in range(num_views):
+                    view_i = persp_imgs[i]
+                    neighbor_view_i = eq_to_persp[neighbor_img]['images'][i]
+                    pairs.append((view_i, neighbor_view_i))
+    # Write pairs to file
+    with open(output_path, 'w') as f:
+        for img1, img2 in pairs:
+            f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
+    logger.debug(f"Generated {len(pairs)} pairs at {output_path}")
+
 def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir=None):
     """Run HLoc with SuperPoint+SuperGlue for feature extraction and matching."""
     try:
-        from hloc import extract_features, match_features, pairs_from_sequence, reconstruction
+        from hloc import extract_features, match_features, reconstruction
         from hloc.utils import base_model
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -370,32 +395,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     # Generate matching pairs (intra-image and sequential)
     image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
     pairs_path = os.path.join(output_dir, 'pairs.txt')
-    num_views = 8  # Number of perspective images per equirectangular
-    pairs = []
-    for eq_img, data in eq_to_persp.items():
-        persp_imgs = data['images']
-        # Intra-image matching: connect each view to its neighbors
-        for i in range(num_views):
-            view_i = persp_imgs[i]
-            view_prev = persp_imgs[(i - 1) % num_views]
-            view_next = persp_imgs[(i + 1) % num_views]
-            pairs.append((view_i, view_prev))
-            pairs.append((view_i, view_next))
-        # Sequential matching: connect to previous and next equirectangular images
-        eq_idx = int(eq_img.split('_')[1].split('.')[0])  # e.g., frame_0001.jpg -> 1
-        for offset in [-1, 1]:
-            neighbor_idx = eq_idx + offset
-            neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
-            if neighbor_img in eq_to_persp:
-                for i in range(num_views):
-                    view_i = persp_imgs[i]
-                    neighbor_view_i = eq_to_persp[neighbor_img]['images'][i]
-                    pairs.append((view_i, neighbor_view_i))
-    # Write pairs to file
-    with open(pairs_path, 'w') as f:
-        for img1, img2 in pairs:
-            f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
-    logger.debug(f"Generated {len(pairs)} pairs at {pairs_path}")
+    generate_image_pairs(image_list, eq_to_persp, pairs_path)
 
     # Perform matching
     match_path = os.path.join(output_dir, 'matches', 'superglue.h5')
@@ -424,7 +424,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'PINHOLE',
-                'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"  # f=(width/2)/tan(FOV/2), cx=width/2, cy=height/2
+                'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"
             }
         )
         logger.debug(f"SfM completed: {output_dir}/sfm")
@@ -603,7 +603,6 @@ def process_video():
     mask_files = sorted(glob.glob(os.path.join(masks_dir, '*.png')))
     for img_path in image_files:
         img_name = os.path.basename(img_path)
-        # Split image
         success, persp_paths = split_equirectangular_image(img_path, persp_images_dir)
         if not success:
             logger.error(f"Failed to split {img_path}")
@@ -611,7 +610,6 @@ def process_video():
             logger.debug(f"Sending response: {response}")
             return response, 500
         eq_to_persp[img_name] = {'images': [os.path.basename(p) for p in persp_paths], 'masks': []}
-        # Split corresponding mask if it exists
         mask_path = os.path.join(masks_dir, img_name.replace('.jpg', '.png'))
         if os.path.exists(mask_path):
             success, mask_paths = split_equirectangular_mask(mask_path, masks_dir)
@@ -766,8 +764,8 @@ def process_dense():
 
             reconstruction.write(chunk_sparse_dir)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            filtered_image_names = [(img_id, os.path.basename(img.name)) 
-                                for img_id, img in reconstruction.images.items()]
+            filtered_image_names = [(img_id, os.path.basename(img.name))
+                                   for img_id, img in reconstruction.images.items()]
             logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
 
             if len(reconstruction.images) != len(chunk_image_names):
@@ -791,8 +789,8 @@ def process_dense():
 
                 new_reconstruction.write(chunk_sparse_dir)
                 reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-                filtered_image_names = [(img_id, os.path.basename(img.name)) 
-                                    for img_id, img in reconstruction.images.items()]
+                filtered_image_names = [(img_id, os.path.basename(img.name))
+                                       for img_id, img in reconstruction.images.items()]
 
                 if len(reconstruction.images) != len(chunk_image_names):
                     logger.error(f"Chunk {idx} sparse model has {len(reconstruction.images)} images, expected {len(chunk_image_names)}")
