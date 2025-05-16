@@ -360,6 +360,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
 
     # Configure SuperPoint
     superpoint_conf = {
+        'output': 'feats-superpoint',
         'model': {
             'name': 'superpoint',
             'nms_radius': 4,
@@ -375,6 +376,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
 
     # Configure SuperGlue
     superglue_conf = {
+        'output': 'matches-superglue',
         'model': {
             'name': 'superglue',
             'weights': 'indoor',
@@ -385,8 +387,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     logger.debug(f"SuperGlue config: {superglue_conf}")
 
     # Extract features
-    feature_path = os.path.join(output_dir, 'features', 'superpoint.h5')
-    feature_dir = os.path.dirname(feature_path)
+    feature_dir = os.path.join(output_dir, 'features')
+    feature_path = os.path.join(feature_dir, 'feats-superpoint.h5')
     os.makedirs(feature_dir, exist_ok=True)
     logger.debug(f"Starting feature extraction: feature_path={feature_path}, feature_dir={feature_dir}")
     try:
@@ -412,8 +414,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         return False, f"Pair generation failed: {str(e)}"
 
     # Perform matching
-    match_path = os.path.join(output_dir, 'matches', 'superglue.h5')
-    match_dir = os.path.dirname(match_path)
+    match_dir = os.path.join(output_dir, 'matches')
+    match_path = os.path.join(match_dir, 'matches-superglue.h5')
     os.makedirs(match_dir, exist_ok=True)
     logger.debug(f"Starting matching: match_path={match_path}, match_dir={match_dir}")
     try:
