@@ -384,7 +384,6 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             conf=superpoint_conf,
             image_dir=Path(images_dir),
             export_dir=Path(os.path.dirname(feature_path)),
-            device=device,
             mask_path=Path(masks_dir) if masks_dir and os.path.exists(masks_dir) else None
         )
         logger.debug(f"Feature extraction completed: {feature_path}")
@@ -405,8 +404,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             conf=superglue_conf,
             pairs=Path(pairs_path),
             features=Path(feature_path),
-            export_dir=Path(os.path.dirname(match_path)),
-            device=device
+            export_dir=Path(os.path.dirname(match_path))
         )
         logger.debug(f"Matching completed: {match_path}")
     except Exception as e:
@@ -764,7 +762,7 @@ def process_dense():
 
             reconstruction.write(chunk_sparse_dir)
             reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-            filtered_image_names = [(img_id, os.path.basename(img.name))
+            filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                    for img_id, img in reconstruction.images.items()]
             logger.debug(f"Chunk {idx} sparse model filtered to {len(reconstruction.images)} images")
 
@@ -789,7 +787,7 @@ def process_dense():
 
                 new_reconstruction.write(chunk_sparse_dir)
                 reconstruction = pycolmap.Reconstruction(chunk_sparse_dir)
-                filtered_image_names = [(img_id, os.path.basename(img.name))
+                filtered_image_names = [(img_id, os.path.basename(img.name)) 
                                        for img_id, img in reconstruction.images.items()]
 
                 if len(reconstruction.images) != len(chunk_image_names):
