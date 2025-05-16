@@ -370,7 +370,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': 0.1
+            'match_threshold': '0.1'
         },
         'output_dir': os.path.join(output_dir, 'matches')
     }
@@ -383,8 +383,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         extract_features.main(
             conf=superpoint_conf,
             image_dir=Path(images_dir),
-            export_dir=Path(os.path.dirname(feature_path)),
-            mask_path=Path(masks_dir) if masks_dir and os.path.exists(masks_dir) else None
+            export_dir=Path(os.path.dirname(feature_path))
         )
         logger.debug(f"Feature extraction completed: {feature_path}")
     except Exception as e:
