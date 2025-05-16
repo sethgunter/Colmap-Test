@@ -359,8 +359,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'preprocessing': {
             'grayscale': True,
             'resize_max': 960
-        },
-        'output_dir': os.path.join(output_dir, 'features')
+        }
     }
     logger.debug(f"SuperPoint config: {superpoint_conf}")
 
@@ -370,9 +369,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': '0.1'
-        },
-        'output_dir': os.path.join(output_dir, 'matches')
+            'match_threshold': 0.1
+        }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
 
