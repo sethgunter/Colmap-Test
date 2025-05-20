@@ -238,8 +238,8 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=180, output_size=960):
-    """Split an equirectangular image into two fisheye images (front and back hemispheres)."""
+def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=190, output_size=960):
+    """Split an equirectangular image into two fisheye images (Insta360 dual lenses)."""
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -253,7 +253,7 @@ def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=180
             yaw = 180.0 * i  # 0° (front), 180° (back)
             fisheye_img = py360convert.e2p(
                 img,
-                fov_deg=(fov_deg, fov_deg),  # 180° FOV for fisheye
+                fov_deg=(190, 190),  # Insta360 lenses ~190° FOV
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
@@ -270,7 +270,7 @@ def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=180
         logger.error(f"Failed to split equirectangular image {image_path}: {str(e)}")
         return False, []
 
-def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=180, output_size=960):
+def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=190, output_size=960):
     """Split an equirectangular mask into two fisheye masks."""
     try:
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
@@ -285,7 +285,7 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=180, 
             yaw = 180.0 * i  # 0° (front), 180° (back)
             fisheye_mask = py360convert.e2p(
                 mask,
-                fov_deg=(fov_deg, fov_deg),  # 180° FOV for fisheye
+                fov_deg=(190, 190),
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
@@ -307,20 +307,18 @@ def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=2):
     """Generate pairs for two fisheye images per equirectangular frame."""
     pairs = []
     for eq_img, data in eq_to_persp.items():
-        fisheye_imgs = data['images']  # Two fisheye images
-        # Intra-image matching (front and back)
-        pairs.append((fisheye_imgs[0], fisheye_imgs[1]))
-        # Sequential matching
+        fisheye_imgs = data['images']
+        pairs.append((fisheye_imgs[0], fisheye_imgs[1]))  # Front-back
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
-        for offset in [-3, -2, -1, 1, 2, 3]:
+        for offset in [-2, -1, 1, 2]:  # Reduced to focus on high-overlap pairs
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
                 neighbor_fisheye_imgs = eq_to_persp[neighbor_img]['images']
-                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[0]))  # Front-front
-                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[1]))  # Back-back
-                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[1]))  # Front-back
-                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[0]))  # Back-front
+                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[0]))
+                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[1]))
+                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[1]))
+                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[0]))
     with open(output_path, 'w') as f:
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -375,8 +373,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'model': {
             'name': 'superglue',
             'weights': 'indoor',
-            'sinkhorn_iterations': 50,
-            'match_threshold': 0.01
+            'sinkhorn_iterations': 100,
+            'match_threshold': 0.1
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
@@ -439,8 +437,9 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'OPENCV_FISHEYE',
-                'camera_params': '960,960,480,480,0.1,0.05,0.01,0.001'  # fx,fy,cx,cy,k1,k2,k3,k4
+                'camera_params': '900,900,480,480,0.2,0.1,0.05,0.01'  # Calibrated estimate
             },
+            skip_geometric_verification=True,  # Retain SuperGlue matches
             verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
