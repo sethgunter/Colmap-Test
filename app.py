@@ -308,16 +308,18 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=4, fov_deg=120, 
 def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
     """Generate pairs for four perspective images per Insta360 X4 equirectangular frame, inter-frame only."""
     pairs = []
+    view_names = ['front', 'right', 'back', 'left']
     for eq_img, data in eq_to_persp.items():
         persp_imgs = data['images']
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
-        for offset in [-1, 1]:  # Pair with previous and next frames
+        for offset in [-2, -1, 1, 2]:  # Pair with ±1 and ±2 frames
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
                 neighbor_persp_imgs = eq_to_persp[neighbor_img]['images']
-                for i in range(num_views):
-                    pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))  # Same view across frames
+                for i in range(num_views):  # Current view
+                    for j in range(num_views):  # Neighbor view
+                        pairs.append((persp_imgs[i], neighbor_persp_imgs[j]))  # Cross-view pairs
     with open(output_path, 'w') as f:
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -374,7 +376,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': 0.03
+            'match_threshold': 0.04
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
@@ -442,8 +444,11 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             mapper_options={
                 'min_num_matches': 15,
                 'ba_refine_focal_length': False,
-                'ba_refine_principal_point': False
+                'ba_refine_principal_point': False,
+                'max_num_iterations': 200,  # Increase for stability
+                'ba_global_max_num_iterations': 100  # Robust bundle adjustment
             },
+            min_match_score=0.5,  # Relax SIFT verification
             skip_geometric_verification=False,
             verbose=True
         )
