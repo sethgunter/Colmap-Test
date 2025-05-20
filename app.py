@@ -447,12 +447,19 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     sfm_dir = os.path.join(output_dir, 'sfm')
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
+        # Convert paths to strings
+        sfm_dir_str = str(sfm_dir)
+        images_dir_str = str(images_dir)
+        pairs_path_str = str(pairs_path)
+        feature_path_str = str(feature_path)
+        match_path_str = str(match_path)
+
         model = reconstruction.main(
-            sfm_dir=Path(sfm_dir),
-            image_dir=Path(images_dir),
-            pairs=Path(pairs_path),
-            features=Path(feature_path),
-            matches=Path(match_path),
+            sfm_dir=sfm_dir_str,
+            image_dir=images_dir_str,
+            pairs=pairs_path_str,
+            features=feature_path_str,
+            matches=match_path_str,
             camera_mode=pycolmap.CameraMode.PER_FOLDER,
             image_options={
                 'camera_model': 'SIMPLE_PINHOLE',
@@ -461,9 +468,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             mapper_options={
                 'min_num_matches': 15,
                 'ba_refine_focal_length': False,
-                'ba_refine_principal_point': False,
-                'max_num_iterations': 200,
-                'ba_global_max_num_iterations': 100
+                'ba_refine_principal_point': False
             },
             min_match_score=0.5,
             skip_geometric_verification=False,
