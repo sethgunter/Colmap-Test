@@ -363,8 +363,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'preprocessing': {
             'grayscale': True,
             'resize_max': 960
-        },
-        'mask': True if masks_dir else False  # Support masks
+        }
+        
     }
     logger.debug(f"SuperPoint config: {superpoint_conf}")
 
