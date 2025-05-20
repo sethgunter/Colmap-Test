@@ -309,6 +309,7 @@ def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
     """Generate pairs for four perspective images per Insta360 X4 equirectangular frame, inter-frame only."""
     pairs = []
     view_names = ['front', 'right', 'back', 'left']
+    num_views = len(view_names)  # Define num_views as 4
     for eq_img, data in eq_to_persp.items():
         persp_imgs = data['images']
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
