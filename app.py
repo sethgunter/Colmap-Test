@@ -98,20 +98,20 @@ def cleanup_old_requests(current_request_id):
             logger.debug(f"No project directory found at {project_dir}")
             return True
         for item in os.listdir(project_dir):
-            item_path = os.path.join(project_dir, item)
-            if os.path.isdir(item_path) and item != current_request_id:
+            image_path = os.path.join(project_dir, item)
+            if os.path.isdir(image_path) and item != current_request_id:
                 for attempt in range(5):
                     try:
                         terminate_child_processes()
-                        debug_file_locks(item_path)
-                        shutil.rmtree(item_path)
-                        logger.debug(f"Successfully removed old directory: {item_path}")
+                        debug_file_locks(image_path)
+                        shutil.rmtree(image_path)
+                        logger.debug(f"Successfully removed old directory: {image_path}")
                         break
                     except OSError as e:
-                        logger.warning(f"Attempt {attempt+1} to remove {item_path} failed: {e}")
+                        logger.warning(f"Attempt {attempt+1} to remove {image_path} failed: {e}")
                         time.sleep(3)
                 else:
-                    logger.error(f"Failed to remove old directory {item_path} after retries")
+                    logger.error(f"Failed to remove old directory {image_path} after retries")
                     return False
         return True
     except Exception as e:
@@ -329,6 +329,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     try:
         from hloc import extract_features, match_features, reconstruction
         from hloc.utils import base_model
+        import pycolmap
+        import sqlite3
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -372,7 +374,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'output': 'matches-superglue',
         'model': {
             'name': 'superglue',
-            'weights': 'indoor',
+            'weights': 'outdoor',
             'sinkhorn_iterations': 50,
             'match_threshold': 0.03
         }
@@ -424,6 +426,22 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
+    # Initialize COLMAP database with a single camera
+    try:
+        logger.debug(f"Initializing COLMAP database: {database_path}")
+        conn = sqlite3.connect(database_path)
+        c = conn.cursor()
+        c.execute("DELETE FROM cameras")
+        c.execute("INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
+                  "VALUES (?, ?, ?, ?, ?, ?)",
+                  (1, 0, 960, 960, '277,480,480', 0))  # SIMPLE_PINHOLE, width, height, f,cx,cy
+        conn.commit()
+        conn.close()
+        logger.debug("Camera initialized in database")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        return False, f"Failed to initialize database: {str(e)}"
+
     # Run SfM with COLMAP
     sfm_dir = os.path.join(output_dir, 'sfm')
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
@@ -439,8 +457,13 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 'camera_model': 'SIMPLE_PINHOLE',
                 'camera_params': '277,480,480'
             },
+            mapper_options={
+                'min_num_matches': 15,
+                'ignore_two_view_tracks': True,
+                'ba_refine_focal_length': False,
+                'ba_refine_extra_params': False
+            },
             skip_geometric_verification=False,
-            guided_matching=True,
             verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
