@@ -238,8 +238,8 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=187, output_size=960):
-    """Split an Insta360 X4 equirectangular image (1920×960) into two fisheye images."""
+def split_equirectangular_image(image_path, output_dir, num_views=4, fov_deg=90, output_size=960):
+    """Split an Insta360 X4 equirectangular image (1920×960) into four perspective images."""
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -249,29 +249,30 @@ def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=187
         if w != 2 * h or (w != 1920 and h != 960):
             logger.warning(f"Image {image_path} is not 2:1 aspect ratio or 1920×960 ({w}x{h})")
         output_paths = []
-        for i in range(num_views):
-            yaw = 180.0 * i  # 0° (front), 180° (back)
-            fisheye_img = py360convert.e2p(
+        yaws = [0, 90, 180, 270]  # Front, right, back, left
+        view_names = ['front', 'right', 'back', 'left']
+        for i, yaw in enumerate(yaws):
+            persp_img = py360convert.e2p(
                 img,
-                fov_deg=(187, 187),  # X4 lens ~187° FOV
+                fov_deg=(fov_deg, fov_deg),
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
             )
             output_path = os.path.join(
                 output_dir,
-                f"{os.path.splitext(os.path.basename(image_path))[0]}_fisheye_{i}.jpg"
+                f"{os.path.splitext(os.path.basename(image_path))[0]}_{view_names[i]}.jpg"
             )
-            cv2.imwrite(output_path, fisheye_img)
+            cv2.imwrite(output_path, persp_img)
             output_paths.append(output_path)
-            logger.debug(f"Generated fisheye image: {output_path}")
+            logger.debug(f"Generated perspective image: {output_path}")
         return True, output_paths
     except Exception as e:
         logger.error(f"Failed to split equirectangular image {image_path}: {str(e)}")
         return False, []
 
-def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=187, output_size=960):
-    """Split an Insta360 X4 equirectangular mask into two fisheye masks."""
+def split_equirectangular_mask(mask_path, output_dir, num_views=4, fov_deg=90, output_size=960):
+    """Split an Insta360 X4 equirectangular mask into four perspective masks."""
     try:
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
@@ -281,44 +282,47 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=187, 
         if w != 2 * h or (w != 1920 and h != 960):
             logger.warning(f"Mask {mask_path} is not 2:1 aspect ratio or 1920×960 ({w}x{h})")
         output_paths = []
-        for i in range(num_views):
-            yaw = 180.0 * i  # 0° (front), 180° (back)
-            fisheye_mask = py360convert.e2p(
+        yaws = [0, 90, 180, 270]  # Front, right, back, left
+        view_names = ['front', 'right', 'back', 'left']
+        for i, yaw in enumerate(yaws):
+            persp_mask = py360convert.e2p(
                 mask,
-                fov_deg=(187, 187),
+                fov_deg=(fov_deg, fov_deg),
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
             )
-            fisheye_mask = (fisheye_mask > 0).astype(np.uint8) * 255
+            persp_mask = (persp_mask > 0).astype(np.uint8) * 255
             output_path = os.path.join(
                 output_dir,
-                f"{os.path.splitext(os.path.basename(mask_path))[0]}_fisheye_{i}.png"
+                f"{os.path.splitext(os.path.basename(mask_path))[0]}_{view_names[i]}.png"
             )
-            cv2.imwrite(output_path, fisheye_mask)
+            cv2.imwrite(output_path, persp_mask)
             output_paths.append(output_path)
-            logger.debug(f"Generated fisheye mask: {output_path}")
+            logger.debug(f"Generated perspective mask: {output_path}")
         return True, output_paths
     except Exception as e:
         logger.error(f"Failed to split equirectangular mask {mask_path}: {str(e)}")
         return False, []
 
-def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=2):
-    """Generate pairs for two fisheye images per Insta360 X4 equirectangular frame."""
+def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
+    """Generate pairs for four perspective images per Insta360 X4 equirectangular frame."""
     pairs = []
+    view_names = ['front', 'right', 'back', 'left']
     for eq_img, data in eq_to_persp.items():
-        fisheye_imgs = data['images']
-        pairs.append((fisheye_imgs[0], fisheye_imgs[1]))  # Front-back
+        persp_imgs = data['images']
+        # Intra-frame pairs (adjacent views)
+        for i in range(num_views):
+            pairs.append((persp_imgs[i], persp_imgs[(i + 1) % num_views]))
+        # Inter-frame pairs (same view in adjacent frames)
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
-        for offset in [-1, 1]:  # High-overlap pairs
+        for offset in [-1, 1]:
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
-                neighbor_fisheye_imgs = eq_to_persp[neighbor_img]['images']
-                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[0]))
-                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[1]))
-                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[1]))
-                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[0]))
+                neighbor_persp_imgs = eq_to_persp[neighbor_img]['images']
+                for i in range(num_views):
+                    pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))
     with open(output_path, 'w') as f:
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -380,7 +384,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
 
-  # Extract features
+    # Extract features
     feature_dir = os.path.join(output_dir, 'features')
     feature_path = os.path.join(feature_dir, 'feats-superpoint.h5')
     os.makedirs(feature_dir, exist_ok=True)
@@ -401,7 +405,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     pairs_path = os.path.join(output_dir, 'pairs.txt')
     logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
     try:
-        generate_image_pairs(image_list, eq_to_persp, pairs_path, num_views=2)
+        generate_image_pairs(image_list, eq_to_persp, pairs_path, num_views=4)
         logger.debug(f"Generated pairs at {pairs_path}")
     except Exception as e:
         logger.error(f"Pair generation failed: {str(e)}\n{traceback.format_exc()}")
@@ -437,8 +441,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             matches=Path(match_path),
             camera_mode='PER_FOLDER',
             image_options={
-                'camera_model': 'OPENCV_FISHEYE',
-                'camera_params': '960,960,480,480,0.38,0.18,0.06,0.03'  # Insta360 X4
+                'camera_model': 'SIMPLE_PINHOLE',
+                'camera_params': '480,480,480'  # f, cx, cy for 90° FOV, 960px width
             },
             skip_geometric_verification=True,
             verbose=True
