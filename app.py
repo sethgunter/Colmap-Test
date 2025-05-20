@@ -376,7 +376,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': 0.04
+            'match_threshold': 0.04  # Relaxed for faster matching
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
@@ -402,8 +402,29 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     pairs_path = os.path.join(output_dir, 'pairs.txt')
     logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
     try:
-        generate_image_pairs(image_list, eq_to_persp, pairs_path, num_views=4)
-        logger.debug(f"Generated pairs at {pairs_path}")
+        # Modified to reduce pair count while ensuring connectivity
+        pairs = []
+        view_names = ['front', 'right', 'back', 'left']
+        for eq_img, data in eq_to_persp.items():
+            persp_imgs = data['images']
+            eq_idx = int(eq_img.split('_')[1].split('.')[0])
+            for offset in [-2, -1, 1, 2]:  # ±1, ±2 frames
+                neighbor_idx = eq_idx + offset
+                neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
+                if neighbor_img in eq_to_persp:
+                    neighbor_persp_imgs = eq_to_persp[neighbor_img]['images']
+                    for i in range(num_views):
+                        # Same-view pairs
+                        pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))
+                        # Cross-view pairs every 5th frame for connectivity
+                        if eq_idx % 5 == 0:
+                            for j in range(num_views):
+                                if i != j:  # Avoid same view
+                                    pairs.append((persp_imgs[i], neighbor_persp_imgs[j]))
+        with open(output_path, 'w') as f:
+            for img1, img2 in pairs:
+                f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
+        logger.debug(f"Generated {len(pairs)} pairs at {pairs_path}")
     except Exception as e:
         logger.error(f"Pair generation failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Pair generation failed: {str(e)}"
@@ -445,10 +466,10 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 'min_num_matches': 15,
                 'ba_refine_focal_length': False,
                 'ba_refine_principal_point': False,
-                'max_num_iterations': 200,  # Increase for stability
-                'ba_global_max_num_iterations': 100  # Robust bundle adjustment
+                'max_num_iterations': 200,
+                'ba_global_max_num_iterations': 100
             },
-            min_match_score=0.5,  # Relax SIFT verification
+            min_match_score=0.5,
             skip_geometric_verification=False,
             verbose=True
         )
@@ -459,7 +480,6 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
 
     logger.debug("HLoc processing completed successfully")
     return True, ""
-
 @app.route('/process-video', methods=['POST'])
 def process_video():
     logger.debug("Received POST request to /process-video")
