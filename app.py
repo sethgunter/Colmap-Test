@@ -238,22 +238,22 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=190, output_size=960):
-    """Split an equirectangular image into two fisheye images (Insta360 dual lenses)."""
+def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=187, output_size=960):
+    """Split an Insta360 X4 equirectangular image (1920×960) into two fisheye images."""
     try:
         img = cv2.imread(image_path)
         if img is None:
             logger.error(f"Failed to load image: {image_path}")
             return False, []
         h, w = img.shape[:2]
-        if w != 2 * h:
-            logger.warning(f"Image {image_path} is not 2:1 aspect ratio ({w}x{h})")
+        if w != 2 * h or (w != 1920 and h != 960):
+            logger.warning(f"Image {image_path} is not 2:1 aspect ratio or 1920×960 ({w}x{h})")
         output_paths = []
         for i in range(num_views):
             yaw = 180.0 * i  # 0° (front), 180° (back)
             fisheye_img = py360convert.e2p(
                 img,
-                fov_deg=(190, 190),  # Insta360 lenses ~190° FOV
+                fov_deg=(187, 187),  # X4 lens ~187° FOV
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
@@ -270,22 +270,22 @@ def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=190
         logger.error(f"Failed to split equirectangular image {image_path}: {str(e)}")
         return False, []
 
-def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=190, output_size=960):
-    """Split an equirectangular mask into two fisheye masks."""
+def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=187, output_size=960):
+    """Split an Insta360 X4 equirectangular mask into two fisheye masks."""
     try:
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
             logger.error(f"Failed to load mask: {mask_path}")
             return False, []
         h, w = mask.shape
-        if w != 2 * h:
-            logger.warning(f"Mask {mask_path} is not 2:1 aspect ratio ({w}x{h})")
+        if w != 2 * h or (w != 1920 and h != 960):
+            logger.warning(f"Mask {mask_path} is not 2:1 aspect ratio or 1920×960 ({w}x{h})")
         output_paths = []
         for i in range(num_views):
             yaw = 180.0 * i  # 0° (front), 180° (back)
             fisheye_mask = py360convert.e2p(
                 mask,
-                fov_deg=(190, 190),
+                fov_deg=(187, 187),
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
@@ -304,13 +304,13 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=190, 
         return False, []
 
 def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=2):
-    """Generate pairs for two fisheye images per equirectangular frame."""
+    """Generate pairs for two fisheye images per Insta360 X4 equirectangular frame."""
     pairs = []
     for eq_img, data in eq_to_persp.items():
         fisheye_imgs = data['images']
         pairs.append((fisheye_imgs[0], fisheye_imgs[1]))  # Front-back
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
-        for offset in [-2, -1, 1, 2]:  # Reduced to focus on high-overlap pairs
+        for offset in [-1, 1]:  # High-overlap pairs
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
@@ -356,14 +356,15 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'output': 'feats-superpoint',
         'model': {
             'name': 'superpoint',
-            'nms_radius': 4,
-            'keypoint_threshold': 0.005,
-            'max_keypoints': 1000
+            'nms_radius': 3,
+            'keypoint_threshold': 0.001,
+            'max_keypoints': 4096
         },
         'preprocessing': {
             'grayscale': True,
             'resize_max': 960
-        }
+        },
+        'mask': True if masks_dir else False  # Support masks
     }
     logger.debug(f"SuperPoint config: {superpoint_conf}")
 
@@ -373,13 +374,13 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'model': {
             'name': 'superglue',
             'weights': 'indoor',
-            'sinkhorn_iterations': 100,
-            'match_threshold': 0.1
+            'sinkhorn_iterations': 50,
+            'match_threshold': 0.05
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
 
-    # Extract features
+   # Extract features
     feature_dir = os.path.join(output_dir, 'features')
     feature_path = os.path.join(feature_dir, 'feats-superpoint.h5')
     os.makedirs(feature_dir, exist_ok=True)
@@ -388,7 +389,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         extract_features.main(
             conf=superpoint_conf,
             image_dir=Path(images_dir),
-            export_dir=Path(feature_dir)
+            export_dir=Path(feature_dir),
+            mask_dir=Path(masks_dir) if masks_dir else None  # Support masks
         )
         logger.debug(f"Feature extraction completed: {feature_path}")
     except Exception as e:
@@ -400,7 +402,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     pairs_path = os.path.join(output_dir, 'pairs.txt')
     logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
     try:
-        generate_image_pairs(image_list, eq_to_persp, pairs_path)
+        generate_image_pairs(image_list, eq_to_persp, pairs_path, num_views=2)
         logger.debug(f"Generated pairs at {pairs_path}")
     except Exception as e:
         logger.error(f"Pair generation failed: {str(e)}\n{traceback.format_exc()}")
@@ -416,7 +418,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             conf=superglue_conf,
             pairs=Path(pairs_path),
             features=Path(feature_path),
-            matches=Path(match_path),  # Added matches as Path
+            matches=Path(match_path),
             export_dir=Path(match_dir)
         )
         logger.debug(f"Matching completed: {match_path}")
@@ -424,7 +426,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
-  # Run SfM with COLMAP
+    # Run SfM with COLMAP
     sfm_dir = os.path.join(output_dir, 'sfm')
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
@@ -437,10 +439,17 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'OPENCV_FISHEYE',
-                'camera_params': '900,900,480,480,0.2,0.1,0.05,0.01'  # Calibrated estimate
+                'camera_params': '960,960,480,480,0.38,0.18,0.06,0.03'  # X4 calibrated
             },
-            skip_geometric_verification=True,  # Retain SuperGlue matches
-            verbose=True
+            skip_geometric_verification=True,  # Ensure no SIFT verification
+            verbose=True,
+            mapper_options={
+                'min_num_matches': 8,  # Accept more pairs
+                'filter_max_reproj_error': 4.0,  # Relax reprojection
+                'min_track_length': 2,  # Allow shorter tracks
+                'init_min_num_inliers': 10,  # Lower for initialization
+                'ba_global_max_num_iterations': 50  # Robust bundle adjustment
+            }
         )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
