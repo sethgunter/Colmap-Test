@@ -380,7 +380,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
 
-   # Extract features
+  # Extract features
     feature_dir = os.path.join(output_dir, 'features')
     feature_path = os.path.join(feature_dir, 'feats-superpoint.h5')
     os.makedirs(feature_dir, exist_ok=True)
@@ -389,8 +389,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         extract_features.main(
             conf=superpoint_conf,
             image_dir=Path(images_dir),
-            export_dir=Path(feature_dir),
-           
+            export_dir=Path(feature_dir)
         )
         logger.debug(f"Feature extraction completed: {feature_path}")
     except Exception as e:
@@ -439,16 +438,17 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'OPENCV_FISHEYE',
-                'camera_params': '960,960,480,480,0.38,0.18,0.06,0.03'  # X4 calibrated
+                'camera_params': '960,960,480,480,0.38,0.18,0.06,0.03'  # Insta360 X4
             },
-            skip_geometric_verification=True,  # Ensure no SIFT verification
+            skip_geometric_verification=True,
             verbose=True,
-            mapper_options={
-                'min_num_matches': 8,  # Accept more pairs
-                'filter_max_reproj_error': 4.0,  # Relax reprojection
-                'min_track_length': 2,  # Allow shorter tracks
-                'init_min_num_inliers': 10,  # Lower for initialization
-                'ba_global_max_num_iterations': 50  # Robust bundle adjustment
+            options={
+                'num_threads': 8,
+                'min_num_matches': 8,
+                'filter_max_reproj_error': 4.0,
+                'min_track_length': 2,
+                'init_min_num_inliers': 10,
+                'ba_global_max_num_iterations': 50
             }
         )
         logger.debug(f"SfM completed: {sfm_dir}")
