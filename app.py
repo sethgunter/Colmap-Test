@@ -332,7 +332,6 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     try:
         from hloc import extract_features, match_features, reconstruction
         from pathlib import Path
-        import pycolmap
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -448,46 +447,26 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     sfm_dir = os.path.join(output_dir, 'sfm')
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
-        # Convert paths to strings
-        database_path_str = str(database_path)
-        images_dir_str = str(images_dir)
-        sfm_dir_str = str(sfm_dir)
-        pairs_path_str = str(pairs_path)
-        feature_path_str = str(feature_path)
-        match_path_str = str(match_path)
-
-        # Configure camera in database
-        db = pycolmap.Database(database_path_str)
-        camera_id = db.add_camera(
-            model=pycolmap.CameraModel.SIMPLE_PINHOLE,
-            width=960,
-            height=960,
-            params=[277, 480, 480]  # focal_length, cx, cy
-        )
-        for img_path in glob.glob(os.path.join(images_dir, '*.jpg')):
-            img_name = os.path.basename(img_path)
-            db.add_image(name=img_name, camera_id=camera_id)
-        db.commit()
-        db.close()
-
-        # Configure mapper options
-        mapper_options = pycolmap.IncrementalPipelineOptions()
-        mapper_options.min_num_matches = 15
-        mapper_options.ba_refine_focal_length = False
-        mapper_options.ba_refine_principal_point = False
-        mapper_options.max_num_iterations = 200
-        mapper_options.ba_global_max_num_iterations = 100
-        mapper_options.num_threads = 8
-
-        # Run reconstruction
         model = reconstruction.main(
-            database_path=database_path_str,
-            image_path=images_dir_str,
-            output_path=sfm_dir_str,
-            pairs_path=pairs_path_str,
-            features_path=feature_path_str,
-            matches_path=match_path_str,
-            options=mapper_options,
+            sfm_dir=Path(sfm_dir),
+            image_dir=Path(images_dir),
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            matches=Path(match_path),
+            camera_mode=pycolmap.CameraMode.PER_FOLDER,
+            image_options={
+                'camera_model': 'SIMPLE_PINHOLE',
+                'camera_params': '277,480,480'
+            },
+            mapper_options={
+                'min_num_matches': 15,
+                'ba_refine_focal_length': False,
+                'ba_refine_principal_point': False,
+                'max_num_iterations': 200,
+                'ba_global_max_num_iterations': 100
+            },
+            min_match_score=0.5,
+            skip_geometric_verification=False,
             verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
