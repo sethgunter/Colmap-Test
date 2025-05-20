@@ -398,7 +398,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Feature extraction failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Feature extraction failed: {str(e)}"
 
-    # Generate matching pairs (optimized: same-view pairs for ±1 frames)
+    # Generate matching pairs (optimized: same-view pairs for ±1 frames, cross-view every 10th frame)
     image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
     pairs_path = os.path.join(output_dir, 'pairs.txt')
     logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
@@ -415,8 +415,13 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 if neighbor_img in eq_to_persp:
                     neighbor_persp_imgs = eq_to_persp[neighbor_img]['images']
                     for i in range(num_views):
-                        # Same-view pairs only
+                        # Same-view pairs
                         pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))
+                        # Cross-view pairs every 10th frame
+                        if eq_idx % 10 == 0:
+                            for j in range(num_views):
+                                if i != j:  # Exclude same view
+                                    pairs.append((persp_imgs[i], neighbor_persp_imgs[j]))
         with open(pairs_path, 'w') as f:
             for img1, img2 in pairs:
                 f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
