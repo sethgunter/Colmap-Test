@@ -479,11 +479,16 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'left': 270.0,  # 270° yaw
         }
 
-        # Set minimal priors for all images
+        # Set minimal priors for all images using SQL
         for img_name, img_id in image_ids.items():
             prior_q = [1.0, 0.0, 0.0, 0.0]  # Neutral rotation
             prior_t = [0.0, 0.0, 0.0]  # No position assumption
-            db.update_image(img_id, prior_q=prior_q, prior_t=prior_t)
+            db.execute(
+                "UPDATE images SET prior_qw = ?, prior_qx = ?, prior_qy = ?, prior_qz = ?, "
+                "prior_tx = ?, prior_ty = ?, prior_tz = ? WHERE image_id = ?",
+                (prior_q[0], prior_q[1], prior_q[2], prior_q[3],
+                 prior_t[0], prior_t[1], prior_t[2], img_id)
+            )
 
         # Add intra-frame constraints using eq_to_persp mapping
         for eq_img, data in eq_to_persp.items():
