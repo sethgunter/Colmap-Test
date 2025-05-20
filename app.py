@@ -460,15 +460,11 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         # Initialize database
         reconstruction.create_empty_db(database_path)
 
-        # Import images
+        # Import images to populate the database
         reconstruction.import_images(
             image_dir=Path(images_dir),
             database_path=database_path,
-            camera_mode=pycolmap.CameraMode.PER_FOLDER,
-            camera_options={
-                'camera_model': 'SIMPLE_PINHOLE',
-                'camera_params': '277,480,480'
-            }
+            camera_mode=pycolmap.CameraMode.PER_FOLDER
         )
 
         # Add intra-frame constraints
@@ -531,33 +527,26 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         db.commit()
         db.close()
 
-        # Import features
-        reconstruction.import_features(image_ids, database_path, Path(feature_path))
-
-        # Import matches
-        reconstruction.import_matches(
-            image_ids,
-            database_path,
-            Path(pairs_path),
-            Path(match_path),
-            min_match_score=0.5,
-            skip_geometric_verification=False
-        )
-
-        # Run geometric verification
-        reconstruction.estimation_and_geometric_verification(database_path, Path(pairs_path), verbose=True)
-
         # Run reconstruction
-        model = reconstruction.run_reconstruction(
+        model = reconstruction.main(
             sfm_dir=Path(sfm_dir),
-            database_path=database_path,
             image_dir=Path(images_dir),
-            verbose=True,
-            options={
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            matches=Path(match_path),
+            camera_mode=pycolmap.CameraMode.PER_FOLDER,
+            image_options={
+                'camera_model': 'SIMPLE_PINHOLE',
+                'camera_params': '277,480,480'
+            },
+            mapper_options={
                 'min_num_matches': 15,
                 'ba_refine_focal_length': False,
                 'ba_refine_principal_point': False
-            }
+            },
+            min_match_score=0.5,
+            skip_geometric_verification=False,
+            verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
