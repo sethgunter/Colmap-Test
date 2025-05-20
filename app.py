@@ -451,16 +451,16 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
-    # Run SfM with COLMAP, adding intra-frame constraints
+    # Run SfM with COLMAP, enforcing intra-frame constraints
     sfm_dir = os.path.join(output_dir, 'sfm')
     database_path = Path(database_path)
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}, database_path={database_path}")
     try:
-        # Initialize database and import images
+        # Initialize database
         reconstruction.create_empty_db(database_path)
+
+        # Add intra-frame constraints for same position and 90° yaw
         image_ids = reconstruction.get_image_ids(database_path)
-        
-        # Add intra-frame constraints before running main reconstruction
         db = COLMAPDatabase.connect(database_path)
         view_yaw_offsets = {
             'front': 0.0,  # 0° yaw
@@ -476,12 +476,12 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             if eq_idx not in frame_groups:
                 frame_groups[eq_idx] = []
             frame_groups[eq_idx].append((img_id, img_name, view))
-            # Set neutral prior_q and shared prior_t
+            # Minimal priors: neutral rotation, same position per frame
             prior_q = [1.0, 0.0, 0.0, 0.0]  # Identity quaternion
-            prior_t = [eq_idx * 0.1, 0, 0]  # Shared translation
+            prior_t = [0.0, 0.0, 0.0]  # Same position (no inter-frame assumption)
             db.update_image(img_id, prior_q=prior_q, prior_t=prior_t)
 
-        # Add intra-frame relative pose constraints
+        # Add intra-frame constraints: same position, 90° yaw differences
         for eq_idx, images in frame_groups.items():
             for i, (img_id1, img_name1, view1) in enumerate(images):
                 for j, (img_id2, img_name2, view2) in enumerate(images[i+1:], i+1):
@@ -489,14 +489,14 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                     if yaw_diff < 0:
                         yaw_diff += 360.0
                     yaw_rad = math.radians(yaw_diff)
-                    # Relative quaternion for yaw: [cos(θ/2), 0, sin(θ/2), 0]
+                    # Relative quaternion: [cos(θ/2), 0, sin(θ/2), 0]
                     rel_q = [math.cos(yaw_rad/2), 0.0, math.sin(yaw_rad/2), 0.0]
-                    rel_t = [0.0, 0.0, 0.0]  # Zero translation (same location)
+                    rel_t = [0.0, 0.0, 0.0]  # Same position
                     db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.array([]))
         db.commit()
         db.close()
 
-        # Run main reconstruction
+        # Run reconstruction
         model = reconstruction.main(
             sfm_dir=Path(sfm_dir),
             image_dir=Path(images_dir),
