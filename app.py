@@ -442,10 +442,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 'camera_model': 'PINHOLE',
                 'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"
             },
-            feature_matching_options={
-                'min_num_inliers': 10,  # Relax verification
-                'use_gpu': True  # Use GPU for SIFT matching
-            }
+            skip_geometric_verification=True  # Bypass SIFT verification
         )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
