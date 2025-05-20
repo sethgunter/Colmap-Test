@@ -335,6 +335,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         from pathlib import Path
         import numpy as np
         import math
+        import json
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -459,32 +460,47 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         # Initialize database
         reconstruction.create_empty_db(database_path)
 
-        # Add intra-frame constraints for same position and 90° yaw
+        # Get image IDs
         image_ids = reconstruction.get_image_ids(database_path)
         db = COLMAPDatabase.connect(database_path)
+
+        # Define yaw offsets for views
         view_yaw_offsets = {
             'front': 0.0,  # 0° yaw
             'right': 90.0,  # 90° yaw
             'back': 180.0,  # 180° yaw
             'left': 270.0,  # 270° yaw
         }
-        frame_groups = {}  # Group images by frame
+
+        # Set minimal priors for all images
         for img_name, img_id in image_ids.items():
-            parts = img_name.split('_')
-            eq_idx = int(parts[1])  # Frame index, e.g., 1
-            view = parts[2].split('.')[0]  # View, e.g., 'front'
-            if eq_idx not in frame_groups:
-                frame_groups[eq_idx] = []
-            frame_groups[eq_idx].append((img_id, img_name, view))
-            # Minimal priors: neutral rotation, same position per frame
-            prior_q = [1.0, 0.0, 0.0, 0.0]  # Identity quaternion
-            prior_t = [0.0, 0.0, 0.0]  # Same position (no inter-frame assumption)
+            prior_q = [1.0, 0.0, 0.0, 0.0]  # Neutral rotation
+            prior_t = [0.0, 0.0, 0.0]  # No position assumption
             db.update_image(img_id, prior_q=prior_q, prior_t=prior_t)
 
-        # Add intra-frame constraints: same position, 90° yaw differences
-        for eq_idx, images in frame_groups.items():
-            for i, (img_id1, img_name1, view1) in enumerate(images):
-                for j, (img_id2, img_name2, view2) in enumerate(images[i+1:], i+1):
+        # Add intra-frame constraints using eq_to_persp mapping
+        for eq_img, data in eq_to_persp.items():
+            persp_imgs = data['images']  # List of perspective images for this frame
+            if len(persp_imgs) != 4:
+                logger.warning(f"Frame {eq_img} has {len(persp_imgs)} views, expected 4")
+                continue
+            # Map perspective images to their views
+            view_map = {}
+            for img_path in persp_imgs:
+                img_name = os.path.basename(img_path)
+                view = img_name.split('_')[-1].split('.')[0]  # e.g., 'front' from 'frame_0031_front.jpg'
+                if view in view_yaw_offsets:
+                    view_map[view] = img_name
+            if len(view_map) != 4:
+                logger.warning(f"Frame {eq_img} missing views: {view_map.keys()}")
+                continue
+            # Get image IDs for this frame's views
+            frame_image_ids = {view: image_ids[img_name] for view, img_name in view_map.items()}
+            # Add constraints between all pairs of views
+            for view1 in view_yaw_offsets:
+                for view2 in view_yaw_offsets:
+                    if view1 >= view2:  # Avoid duplicate pairs
+                        continue
                     yaw_diff = view_yaw_offsets[view2] - view_yaw_offsets[view1]
                     if yaw_diff < 0:
                         yaw_diff += 360.0
@@ -492,6 +508,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                     # Relative quaternion: [cos(θ/2), 0, sin(θ/2), 0]
                     rel_q = [math.cos(yaw_rad/2), 0.0, math.sin(yaw_rad/2), 0.0]
                     rel_t = [0.0, 0.0, 0.0]  # Same position
+                    img_id1 = frame_image_ids[view1]
+                    img_id2 = frame_image_ids[view2]
                     db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.array([]))
         db.commit()
         db.close()
