@@ -306,23 +306,17 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=4, fov_deg=120, 
         return False, []
 
 def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
-    """Generate pairs for four perspective images per Insta360 X4 equirectangular frame."""
     pairs = []
-    view_names = ['front', 'right', 'back', 'left']
     for eq_img, data in eq_to_persp.items():
         persp_imgs = data['images']
-        # Intra-frame pairs (adjacent views)
-        for i in range(num_views):
-            pairs.append((persp_imgs[i], persp_imgs[(i + 1) % num_views]))
-        # Inter-frame pairs (same view in adjacent frames)
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
-        for offset in [-1, 1]:
+        for offset in [-1, 1]:  # Pair with previous and next frames
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
                 neighbor_persp_imgs = eq_to_persp[neighbor_img]['images']
                 for i in range(num_views):
-                    pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))
+                    pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))  # Same view across frames
     with open(output_path, 'w') as f:
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -444,7 +438,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 'camera_model': 'SIMPLE_PINHOLE',
                 'camera_params': '277,480,480'  # f, cx, cy for 90° FOV, 960px width
             },
-            skip_geometric_verification=True,
+            skip_geometric_verification=False,
             verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
