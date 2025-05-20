@@ -403,9 +403,9 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     pairs_path = os.path.join(output_dir, 'pairs.txt')
     logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
     try:
-        # Modified to reduce pair count while ensuring connectivity
         pairs = []
         view_names = ['front', 'right', 'back', 'left']
+        num_views = len(view_names)  # Define num_views as 4
         for eq_img, data in eq_to_persp.items():
             persp_imgs = data['images']
             eq_idx = int(eq_img.split('_')[1].split('.')[0])
@@ -422,7 +422,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                             for j in range(num_views):
                                 if i != j:  # Avoid same view
                                     pairs.append((persp_imgs[i], neighbor_persp_imgs[j]))
-        with open(output_path, 'w') as f:
+        with open(pairs_path, 'w') as f:  # Fixed typo: output_path -> pairs_path
             for img1, img2 in pairs:
                 f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
         logger.debug(f"Generated {len(pairs)} pairs at {pairs_path}")
