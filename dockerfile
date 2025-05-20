@@ -25,14 +25,14 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
-# Clone and install HLoc from master branch, include third_party in PYTHONPATH
+# Clone and install HLoc from master branch, preserve third_party
 RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
     git checkout master && \
     sed -i '/lightglue/d' requirements.txt && \
     pip install --no-cache-dir . && \
-    export PYTHONPATH="/hloc/third_party:$PYTHONPATH" && \
-    rm -rf /hloc
+    # Verify third_party contents
+    ls -l /hloc/third_party
 
 # Build and install COLMAP
 RUN git clone https://github.com/colmap/colmap.git /colmap && \
@@ -41,14 +41,14 @@ RUN git clone https://github.com/colmap/colmap.git /colmap && \
     mkdir build && cd build && \
     cmake .. -GNinja -DCMAKE_INSTALL_PREFIX=/colmap-install -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} && \
     ninja install && \
-    cd ../.. && rm -rf /colmap
+    rm -rf /colmap
 
 # Runtime stage
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn8-runtime-ubuntu${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install runtime dependencies, including git
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-program-options1.74.0 libboost-filesystem1.74.0 libboost-graph1.74.0 libboost-system1.74.0 \
     libc6 libceres2 libfreeimage3 libgcc-s1 libgflags2.2 \
@@ -66,14 +66,14 @@ RUN pip install --no-cache-dir flask psutil gunicorn GPUtil plyfile pycolmap num
     torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
-# Install HLoc from master branch in runtime stage, include third_party in PYTHONPATH
+# Clone HLoc and preserve third_party directory
 RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
     git checkout master && \
     sed -i '/lightglue/d' requirements.txt && \
     pip install --no-cache-dir . && \
-    export PYTHONPATH="/hloc/third_party:$PYTHONPATH" && \
-    rm -rf /hloc
+    # Verify third_party contents
+    ls -l /hloc/third_party
 
 # Copy COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
@@ -89,7 +89,7 @@ RUN chmod 644 /app/vocab_tree.bin
 # Verify static files
 RUN ls -l /app/static/ && test -f /app/static/index.js && test -f /app/static/index.html
 
-# Set environment variables for CUDA
+# Set environment variables for CUDA and PYTHONPATH
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 ENV PYTHONPATH=/app:/hloc/third_party:$PYTHONPATH
