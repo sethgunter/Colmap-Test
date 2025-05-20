@@ -304,20 +304,17 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, o
         return False, []
 
 def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=8):
-    """Generate intra-image and sequential image pairs for matching, only for close images."""
     pairs = []
     for eq_img, data in eq_to_persp.items():
         persp_imgs = data['images']
-        # Intra-image matching: connect each view to its neighbors
         for i in range(num_views):
             view_i = persp_imgs[i]
             view_prev = persp_imgs[(i - 1) % num_views]
             view_next = persp_imgs[(i + 1) % num_views]
             pairs.append((view_i, view_prev))
             pairs.append((view_i, view_next))
-        # Sequential matching: connect to previous and next equirectangular images
-        eq_idx = int(eq_img.split('_')[1].split('.')[0])  # e.g., frame_0001.jpg -> 1
-        for offset in [-1, 1]:  # Only pair with immediate neighbors (±1)
+        eq_idx = int(eq_img.split('_')[1].split('.')[0])
+        for offset in [-2, -1, 1, 2]:  # More sequential pairs
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
@@ -325,7 +322,6 @@ def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=8):
                     view_i = persp_imgs[i]
                     neighbor_view_i = eq_to_persp[neighbor_img]['images'][i]
                     pairs.append((view_i, neighbor_view_i))
-    # Write pairs to file
     with open(output_path, 'w') as f:
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -381,7 +377,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': 0.1
+            'match_threshold': 0.01
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
@@ -436,7 +432,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
         model = reconstruction.main(
-            sfm_dir=Path(sfm_dir),  # Changed from output_dir to sfm_dir
+            sfm_dir=Path(sfm_dir),
             image_dir=Path(images_dir),
             pairs=Path(pairs_path),
             features=Path(feature_path),
@@ -445,6 +441,10 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             image_options={
                 'camera_model': 'PINHOLE',
                 'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"
+            },
+            feature_matching_options={
+                'min_num_inliers': 10,  # Relax verification
+                'use_gpu': True  # Use GPU for SIFT matching
             }
         )
         logger.debug(f"SfM completed: {sfm_dir}")
