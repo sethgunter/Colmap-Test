@@ -322,14 +322,14 @@ def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
     logger.debug(f"Generated {len(pairs)} pairs at {output_path}")
-
+    
 def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir=None):
     """Run HLoc with SuperPoint+SuperGlue for feature extraction and matching."""
     import traceback
     try:
         from hloc import extract_features, match_features, reconstruction
-        import pycolmap
         from pathlib import Path
+        import pycolmap
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -388,8 +388,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     try:
         extract_features.main(
             conf=superpoint_conf,
-            image_dir=images_dir,
-            export_dir=feature_dir
+            image_dir=Path(images_dir),
+            export_dir=Path(feature_dir)
         )
         logger.debug(f"Feature extraction completed: {feature_path}")
     except Exception as e:
@@ -415,10 +415,10 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     try:
         match_features.main(
             conf=superglue_conf,
-            pairs=pairs_path,
-            features=feature_path,
-            matches=match_path,
-            export_dir=match_dir
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            matches=Path(match_path),
+            export_dir=Path(match_dir)
         )
         logger.debug(f"Matching completed: {match_path}")
     except Exception as e:
