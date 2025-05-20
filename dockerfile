@@ -25,14 +25,19 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
-# Clone and install HLoc from master branch, preserve third_party
-RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
+# Clone and install HLoc, ensure complete SuperGluePretrainedNetwork
+RUN git clone --recurse-submodules https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
     git checkout master && \
     sed -i '/lightglue/d' requirements.txt && \
+    # Replace SuperGluePretrainedNetwork with a complete clone
+    rm -rf third_party/SuperGluePretrainedNetwork && \
+    git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git third_party/SuperGluePretrainedNetwork && \
     pip install --no-cache-dir . && \
-    # Verify third_party contents
-    ls -l /hloc/third_party
+    # Verify contents
+    ls -l third_party/SuperGluePretrainedNetwork && \
+    test -f third_party/SuperGluePretrainedNetwork/models/superpoint.py && \
+    echo "SuperGluePretrainedNetwork/models/superpoint.py found"
 
 # Build and install COLMAP
 RUN git clone https://github.com/colmap/colmap.git /colmap && \
@@ -66,14 +71,19 @@ RUN pip install --no-cache-dir flask psutil gunicorn GPUtil plyfile pycolmap num
     torch==1.13.1+cu117 torchvision==0.14.1+cu117 --extra-index-url https://download.pytorch.org/whl/cu117 && \
     pip install --no-cache-dir kornia==0.6.11 h5py py360convert
 
-# Clone HLoc and preserve third_party directory
-RUN git clone https://github.com/cvg/Hierarchical-Localization.git /hloc && \
+# Clone HLoc and ensure complete SuperGluePretrainedNetwork
+RUN git clone --recurse-submodules https://github.com/cvg/Hierarchical-Localization.git /hloc && \
     cd /hloc && \
     git checkout master && \
     sed -i '/lightglue/d' requirements.txt && \
+    # Replace SuperGluePretrainedNetwork with a complete clone
+    rm -rf third_party/SuperGluePretrainedNetwork && \
+    git clone https://github.com/magicleap/SuperGluePretrainedNetwork.git third_party/SuperGluePretrainedNetwork && \
     pip install --no-cache-dir . && \
-    # Verify third_party contents
-    ls -l /hloc/third_party
+    # Verify contents
+    ls -l third_party/SuperGluePretrainedNetwork && \
+    test -f third_party/SuperGluePretrainedNetwork/models/superpoint.py && \
+    echo "SuperGluePretrainedNetwork/models/superpoint.py found"
 
 # Copy COLMAP installation
 COPY --from=builder /colmap-install/ /usr/local/
