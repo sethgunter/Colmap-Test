@@ -306,6 +306,7 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=4, fov_deg=120, 
         return False, []
 
 def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
+    """Generate pairs for four perspective images per Insta360 X4 equirectangular frame, inter-frame only."""
     pairs = []
     for eq_img, data in eq_to_persp.items():
         persp_imgs = data['images']
@@ -362,7 +363,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'grayscale': True,
             'resize_max': 960
         },
-        'mask': True if masks_dir else False  # Support masks
+        'mask': True if masks_dir else False
     }
     logger.debug(f"SuperPoint config: {superpoint_conf}")
 
@@ -394,7 +395,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Feature extraction failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Feature extraction failed: {str(e)}"
 
-    # Generate matching pairs (intra-image and sequential)
+    # Generate matching pairs
     image_list = sorted(glob.glob(os.path.join(images_dir, '*.jpg')))
     pairs_path = os.path.join(output_dir, 'pairs.txt')
     logger.debug(f"Generating pairs: image_list={len(image_list)} images, pairs_path={pairs_path}")
@@ -436,9 +437,10 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'SIMPLE_PINHOLE',
-                'camera_params': '277,480,480'  # f, cx, cy for 90° FOV, 960px width
+                'camera_params': '277,480,480'
             },
             skip_geometric_verification=False,
+            guided_matching=True,
             verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
