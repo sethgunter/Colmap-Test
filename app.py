@@ -238,7 +238,7 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-def split_equirectangular_image(image_path, output_dir, num_views=4, fov_deg=90, output_size=960):
+def split_equirectangular_image(image_path, output_dir, num_views=4, fov_deg=120, output_size=960):
     """Split an Insta360 X4 equirectangular image (1920×960) into four perspective images."""
     try:
         img = cv2.imread(image_path)
@@ -271,7 +271,7 @@ def split_equirectangular_image(image_path, output_dir, num_views=4, fov_deg=90,
         logger.error(f"Failed to split equirectangular image {image_path}: {str(e)}")
         return False, []
 
-def split_equirectangular_mask(mask_path, output_dir, num_views=4, fov_deg=90, output_size=960):
+def split_equirectangular_mask(mask_path, output_dir, num_views=4, fov_deg=120, output_size=960):
     """Split an Insta360 X4 equirectangular mask into four perspective masks."""
     try:
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
@@ -442,7 +442,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'SIMPLE_PINHOLE',
-                'camera_params': '480,480,480'  # f, cx, cy for 90° FOV, 960px width
+                'camera_params': '277,480,480'  # f, cx, cy for 90° FOV, 960px width
             },
             skip_geometric_verification=True,
             verbose=True
