@@ -357,8 +357,8 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'model': {
             'name': 'superpoint',
             'nms_radius': 3,
-            'keypoint_threshold': 0.001,
-            'max_keypoints': 4096
+            'keypoint_threshold': 0.0005,
+            'max_keypoints': 8192
         },
         'preprocessing': {
             'grayscale': True,
@@ -375,7 +375,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': 0.05
+            'match_threshold': 0.03
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
