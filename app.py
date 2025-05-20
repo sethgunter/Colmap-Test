@@ -423,6 +423,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             conf=superglue_conf,
             pairs=Path(pairs_path),
             features=Path(feature_path),
+            matches=Path(match_path),  # Added matches as Path
             export_dir=Path(match_dir)
         )
         logger.debug(f"Matching completed: {match_path}")
