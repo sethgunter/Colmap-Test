@@ -331,7 +331,10 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     import traceback
     try:
         from hloc import extract_features, match_features, reconstruction
+        from hloc.utils.database import COLMAPDatabase
         from pathlib import Path
+        import numpy as np
+        import math
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -448,29 +451,83 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
-    # Run SfM with COLMAP
+    # Run SfM with COLMAP, setting initial poses and intra-frame constraints
     sfm_dir = os.path.join(output_dir, 'sfm')
-    logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
+    database_path = Path(database_path)
+    logger.debug(f"Starting SfM: sfm_dir={sfm_dir}, database_path={database_path}")
     try:
-        model = reconstruction.main(
-            sfm_dir=Path(sfm_dir),
+        # Create empty database
+        reconstruction.create_empty_db(database_path)
+
+        # Import images with camera mode and options
+        reconstruction.import_images(
             image_dir=Path(images_dir),
-            pairs=Path(pairs_path),
-            features=Path(feature_path),
-            matches=Path(match_path),
+            database_path=database_path,
             camera_mode=pycolmap.CameraMode.PER_FOLDER,
-            image_options={
-                'camera_model': 'SIMPLE_PINHOLE',
-                'camera_params': '277,480,480'
-            },
-            mapper_options={
-                'min_num_matches': 15,
-                'ba_refine_focal_length': False,
-                'ba_refine_principal_point': False
-            },
+            image_options={'camera_model': 'SIMPLE_PINHOLE', 'camera_params': '277,480,480'},
+            options={},
+        )
+
+        # Set initial poses and intra-frame constraints
+        image_ids = reconstruction.get_image_ids(database_path)
+        db = COLMAPDatabase.connect(database_path)
+        view_yaw_offsets = {
+            'front': 0.0,  # 0° yaw
+            'right': 90.0,  # 90° yaw
+            'back': 180.0,  # 180° yaw
+            'left': 270.0,  # 270° yaw
+        }
+        frame_groups = {}  # Group images by frame
+        for img_name, img_id in image_ids.items():
+            parts = img_name.split('_')
+            eq_idx = int(parts[1])  # Frame index, e.g., 1
+            view = parts[2].split('.')[0]  # View, e.g., 'front'
+            if eq_idx not in frame_groups:
+                frame_groups[eq_idx] = []
+            frame_groups[eq_idx].append((img_id, img_name, view))
+            # Set neutral prior_q and shared prior_t
+            prior_q = [1.0, 0.0, 0.0, 0.0]  # Identity quaternion
+            prior_t = [eq_idx * 0.1, 0, 0]  # Shared translation
+            db.update_image(img_id, prior_q=prior_q, prior_t=prior_t)
+
+        # Add intra-frame relative pose constraints (90° yaw differences, zero translation)
+        for eq_idx, images in frame_groups.items():
+            for i, (img_id1, img_name1, view1) in enumerate(images):
+                for j, (img_id2, img_name2, view2) in enumerate(images[i+1:], i+1):
+                    yaw_diff = view_yaw_offsets[view2] - view_yaw_offsets[view1]
+                    if yaw_diff < 0:
+                        yaw_diff += 360.0
+                    yaw_rad = math.radians(yaw_diff)
+                    # Relative quaternion for yaw: [cos(θ/2), 0, sin(θ/2), 0]
+                    rel_q = [math.cos(yaw_rad/2), 0.0, math.sin(yaw_rad/2), 0.0]
+                    rel_t = [0.0, 0.0, 0.0]  # Zero translation (same location)
+                    db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.array([]))
+        db.commit()
+        db.close()
+
+        # Import features
+        reconstruction.import_features(image_ids, database_path, Path(feature_path))
+
+        # Import matches
+        reconstruction.import_matches(
+            image_ids,
+            database_path,
+            Path(pairs_path),
+            Path(match_path),
             min_match_score=0.5,
             skip_geometric_verification=False,
-            verbose=True
+        )
+
+        # Run geometric verification
+        reconstruction.estimation_and_geometric_verification(database_path, Path(pairs_path), verbose=True)
+
+        # Run reconstruction
+        model = reconstruction.run_reconstruction(
+            sfm_dir=Path(sfm_dir),
+            database_path=database_path,
+            image_dir=Path(images_dir),
+            verbose=True,
+            options={'min_num_matches': 15, 'ba_refine_focal_length': False, 'ba_refine_principal_point': False},
         )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
