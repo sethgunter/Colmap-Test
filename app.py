@@ -328,8 +328,6 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     import traceback
     try:
         from hloc import extract_features, match_features, reconstruction
-        from hloc.utils.database import COLMAPDatabase
-        import sqlite3
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -350,31 +348,6 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     except Exception as e:
         logger.error(f"Failed to load mapping JSON: {str(e)}")
         return False, f"Failed to load mapping JSON: {str(e)}"
-
-    # Initialize COLMAP database
-    try:
-        logger.debug(f"Creating COLMAP database: {database_path}")
-        if database_path.exists():
-            logger.warning("Database exists, deleting it.")
-            database_path.unlink()
-        db = COLMAPDatabase.connect(database_path)
-        db.create_tables()
-        db.commit()
-        db.close()
-        logger.debug("Database schema created")
-
-        # Insert single SIMPLE_PINHOLE camera
-        conn = sqlite3.connect(database_path)
-        c = conn.cursor()
-        c.execute("INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
-                  "VALUES (?, ?, ?, ?, ?, ?)",
-                  (1, 0, 960, 960, '277,480,480', 0))  # SIMPLE_PINHOLE (model=0), f,cx,cy
-        conn.commit()
-        conn.close()
-        logger.debug("Camera initialized in database")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        return False, f"Failed to initialize database: {str(e)}"
 
     # Configure SuperPoint
     superpoint_conf = {
@@ -398,7 +371,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         'output': 'matches-superglue',
         'model': {
             'name': 'superglue',
-            'weights': 'outdoor',
+            'weights': 'indoor',  # Changed to indoor
             'sinkhorn_iterations': 50,
             'match_threshold': 0.03
         }
@@ -441,7 +414,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         match_features.main(
             conf=superglue_conf,
             pairs=Path(pairs_path),
-            features=Path(feature_path),
+            features=Path(feature_path),  # Reference features
             matches=Path(match_path),
             export_dir=Path(match_dir)
         )
