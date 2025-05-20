@@ -436,7 +436,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
         model = reconstruction.main(
-            output_dir=Path(sfm_dir),
+            sfm_dir=Path(sfm_dir),  # Changed from output_dir to sfm_dir
             image_dir=Path(images_dir),
             pairs=Path(pairs_path),
             features=Path(feature_path),
