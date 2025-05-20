@@ -528,7 +528,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                         rel_t = [0.0, 0.0, 0.0]  # Same position
                         img_id1 = frame_image_ids[view1]
                         img_id2 = frame_image_ids[view2]
-                        db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.array([]))
+                        db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.empty((0, 2), dtype=np.int32))
         db.commit()
         db.close()
 
