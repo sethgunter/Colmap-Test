@@ -360,7 +360,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superpoint',
             'nms_radius': 3,
             'keypoint_threshold': 0.0005,
-            'max_keypoints': 8192
+            'max_keypoints': 4096
         },
         'preprocessing': {
             'grayscale': True,
@@ -377,7 +377,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             'name': 'superglue',
             'weights': 'indoor',
             'sinkhorn_iterations': 50,
-            'match_threshold': 0.04  # Relaxed for faster matching
+            'match_threshold': 0.1  # Relaxed for faster matching
         }
     }
     logger.debug(f"SuperGlue config: {superglue_conf}")
@@ -409,20 +409,15 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         for eq_img, data in eq_to_persp.items():
             persp_imgs = data['images']
             eq_idx = int(eq_img.split('_')[1].split('.')[0])
-            for offset in [-2, -1, 1, 2]:  # ±1, ±2 frames
+            for offset in [-1, 1]:  # ±1 frames only
                 neighbor_idx = eq_idx + offset
                 neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
                 if neighbor_img in eq_to_persp:
                     neighbor_persp_imgs = eq_to_persp[neighbor_img]['images']
                     for i in range(num_views):
-                        # Same-view pairs
+                        # Same-view pairs only
                         pairs.append((persp_imgs[i], neighbor_persp_imgs[i]))
-                        # Cross-view pairs every 5th frame for connectivity
-                        if eq_idx % 5 == 0:
-                            for j in range(num_views):
-                                if i != j:  # Avoid same view
-                                    pairs.append((persp_imgs[i], neighbor_persp_imgs[j]))
-        with open(pairs_path, 'w') as f:  # Fixed typo: output_path -> pairs_path
+        with open(pairs_path, 'w') as f:
             for img1, img2 in pairs:
                 f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
         logger.debug(f"Generated {len(pairs)} pairs at {pairs_path}")
