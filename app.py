@@ -441,15 +441,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                 'camera_params': '960,960,480,480,0.38,0.18,0.06,0.03'  # Insta360 X4
             },
             skip_geometric_verification=True,
-            verbose=True,
-            options={
-                'num_threads': 8,
-                'min_num_matches': 8,
-                'filter_max_reproj_error': 4.0,
-                'min_track_length': 2,
-                'init_min_num_inliers': 10,
-                'ba_global_max_num_iterations': 50
-            }
+            verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
