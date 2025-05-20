@@ -328,8 +328,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     import traceback
     try:
         from hloc import extract_features, match_features, reconstruction
-        from hloc.utils import base_model
-        import pycolmap
+        from hloc.utils.database import COLMAPDatabase
         import sqlite3
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
@@ -351,6 +350,31 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     except Exception as e:
         logger.error(f"Failed to load mapping JSON: {str(e)}")
         return False, f"Failed to load mapping JSON: {str(e)}"
+
+    # Initialize COLMAP database
+    try:
+        logger.debug(f"Creating COLMAP database: {database_path}")
+        if database_path.exists():
+            logger.warning("Database exists, deleting it.")
+            database_path.unlink()
+        db = COLMAPDatabase.connect(database_path)
+        db.create_tables()
+        db.commit()
+        db.close()
+        logger.debug("Database schema created")
+
+        # Insert single SIMPLE_PINHOLE camera
+        conn = sqlite3.connect(database_path)
+        c = conn.cursor()
+        c.execute("INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
+                  "VALUES (?, ?, ?, ?, ?, ?)",
+                  (1, 0, 960, 960, '277,480,480', 0))  # SIMPLE_PINHOLE (model=0), f,cx,cy
+        conn.commit()
+        conn.close()
+        logger.debug("Camera initialized in database")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        return False, f"Failed to initialize database: {str(e)}"
 
     # Configure SuperPoint
     superpoint_conf = {
@@ -425,22 +449,6 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     except Exception as e:
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
-
-    # Initialize COLMAP database with a single camera
-    try:
-        logger.debug(f"Initializing COLMAP database: {database_path}")
-        conn = sqlite3.connect(database_path)
-        c = conn.cursor()
-        c.execute("DELETE FROM cameras")
-        c.execute("INSERT INTO cameras (camera_id, model, width, height, params, prior_focal_length) "
-                  "VALUES (?, ?, ?, ?, ?, ?)",
-                  (1, 0, 960, 960, '277,480,480', 0))  # SIMPLE_PINHOLE, width, height, f,cx,cy
-        conn.commit()
-        conn.close()
-        logger.debug("Camera initialized in database")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        return False, f"Failed to initialize database: {str(e)}"
 
     # Run SfM with COLMAP
     sfm_dir = os.path.join(output_dir, 'sfm')
