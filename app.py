@@ -322,14 +322,13 @@ def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=4):
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
     logger.debug(f"Generated {len(pairs)} pairs at {output_path}")
-    
+
 def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir=None):
     """Run HLoc with SuperPoint+SuperGlue for feature extraction and matching."""
     import traceback
     try:
         from hloc import extract_features, match_features, reconstruction
         from pathlib import Path
-        import pycolmap
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -430,22 +429,21 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
         model = reconstruction.main(
-            sfm_dir=str(sfm_dir),
-            image_dir=str(images_dir),
-            pairs=str(pairs_path),
-            features=str(feature_path),
-            matches=str(match_path),
+            sfm_dir=Path(sfm_dir),
+            image_dir=Path(images_dir),
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            matches=Path(match_path),
             camera_mode='PER_FOLDER',
             image_options={
                 'camera_model': 'SIMPLE_PINHOLE',
                 'camera_params': '277,480,480'
             },
-            mapper_options=pycolmap.IncrementalPipelineOptions(
-                min_num_matches=15,
-                ignore_two_view_tracks=True,
-                ba_refine_focal_length=False,
-                ba_refine_extra_params=False
-            ),
+            mapper_options={
+                'min_num_matches': 15,
+                'ba_refine_focal_length': False,
+                'ba_refine_principal_point': False
+            },
             skip_geometric_verification=False,
             verbose=True
         )
