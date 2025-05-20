@@ -457,10 +457,29 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     database_path = Path(database_path)
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}, database_path={database_path}")
     try:
-        # Initialize database
-        reconstruction.create_empty_db(database_path)
+        # Run reconstruction to import images and perform SfM
+        model = reconstruction.main(
+            sfm_dir=Path(sfm_dir),
+            image_dir=Path(images_dir),
+            pairs=Path(pairs_path),
+            features=Path(feature_path),
+            matches=Path(match_path),
+            camera_mode=pycolmap.CameraMode.PER_FOLDER,
+            image_options={
+                'camera_model': 'SIMPLE_PINHOLE',
+                'camera_params': '277,480,480'
+            },
+            mapper_options={
+                'min_num_matches': 15,
+                'ba_refine_focal_length': False,
+                'ba_refine_principal_point': False
+            },
+            min_match_score=0.5,
+            skip_geometric_verification=False,
+            verbose=True
+        )
 
-        # Get image IDs
+        # Reopen database to add intra-frame constraints
         image_ids = reconstruction.get_image_ids(database_path)
         db = COLMAPDatabase.connect(database_path)
 
@@ -488,53 +507,38 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             view_map = {}
             for img_path in persp_imgs:
                 img_name = os.path.basename(img_path)
-                view = img_name.split('_')[-1].split('.')[0]  # e.g., 'front' from 'frame_0031_front.jpg'
+                view = img_name.split('_')[-1].split('.')[0]  # e.g., 'front' from 'frame_0000_front.jpg'
                 if view in view_yaw_offsets:
                     view_map[view] = img_name
             if len(view_map) != 4:
                 logger.warning(f"Frame {eq_img} missing views: {view_map.keys()}")
                 continue
             # Get image IDs for this frame's views
-            frame_image_ids = {view: image_ids[img_name] for view, img_name in view_map.items()}
-            # Add constraints between all pairs of views
-            for view1 in view_yaw_offsets:
-                for view2 in view_yaw_offsets:
-                    if view1 >= view2:  # Avoid duplicate pairs
-                        continue
-                    yaw_diff = view_yaw_offsets[view2] - view_yaw_offsets[view1]
-                    if yaw_diff < 0:
-                        yaw_diff += 360.0
-                    yaw_rad = math.radians(yaw_diff)
-                    # Relative quaternion: [cos(θ/2), 0, sin(θ/2), 0]
-                    rel_q = [math.cos(yaw_rad/2), 0.0, math.sin(yaw_rad/2), 0.0]
-                    rel_t = [0.0, 0.0, 0.0]  # Same position
-                    img_id1 = frame_image_ids[view1]
-                    img_id2 = frame_image_ids[view2]
-                    db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.array([]))
+            frame_image_ids = {}
+            for view, img_name in view_map.items():
+                if img_name not in image_ids:
+                    logger.warning(f"Image {img_name} not found in database for frame {eq_img}")
+                    break
+                frame_image_ids[view] = image_ids[img_name]
+            else:  # Only proceed if all views are found
+                # Add constraints between all pairs of views
+                for view1 in view_yaw_offsets:
+                    for view2 in view_yaw_offsets:
+                        if view1 >= view2:  # Avoid duplicate pairs
+                            continue
+                        yaw_diff = view_yaw_offsets[view2] - view_yaw_offsets[view1]
+                        if yaw_diff < 0:
+                            yaw_diff += 360.0
+                        yaw_rad = math.radians(yaw_diff)
+                        # Relative quaternion: [cos(θ/2), 0, sin(θ/2), 0]
+                        rel_q = [math.cos(yaw_rad/2), 0.0, math.sin(yaw_rad/2), 0.0]
+                        rel_t = [0.0, 0.0, 0.0]  # Same position
+                        img_id1 = frame_image_ids[view1]
+                        img_id2 = frame_image_ids[view2]
+                        db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.array([]))
         db.commit()
         db.close()
 
-        # Run reconstruction
-        model = reconstruction.main(
-            sfm_dir=Path(sfm_dir),
-            image_dir=Path(images_dir),
-            pairs=Path(pairs_path),
-            features=Path(feature_path),
-            matches=Path(match_path),
-            camera_mode=pycolmap.CameraMode.PER_FOLDER,
-            image_options={
-                'camera_model': 'SIMPLE_PINHOLE',
-                'camera_params': '277,480,480'
-            },
-            mapper_options={
-                'min_num_matches': 15,
-                'ba_refine_focal_length': False,
-                'ba_refine_principal_point': False
-            },
-            min_match_score=0.5,
-            skip_geometric_verification=False,
-            verbose=True
-        )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
         logger.error(f"SfM failed: {str(e)}\n{traceback.format_exc()}")
