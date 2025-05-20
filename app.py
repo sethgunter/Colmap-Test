@@ -238,8 +238,8 @@ def export_sparse_ply_and_poses(sparse_model_dir, output_sparse_ply, poses_dir, 
         return False, f"Failed to parse camera poses: {str(e)}"
     return True, ""
 
-def split_equirectangular_image(image_path, output_dir, num_views=8, fov_deg=50, output_size=960):
-    """Split an equirectangular image into perspective images."""
+def split_equirectangular_image(image_path, output_dir, num_views=2, fov_deg=180, output_size=960):
+    """Split an equirectangular image into two fisheye images (front and back hemispheres)."""
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -250,28 +250,28 @@ def split_equirectangular_image(image_path, output_dir, num_views=8, fov_deg=50,
             logger.warning(f"Image {image_path} is not 2:1 aspect ratio ({w}x{h})")
         output_paths = []
         for i in range(num_views):
-            yaw = (360.0 / num_views) * i
-            perspective_img = py360convert.e2p(
+            yaw = 180.0 * i  # 0° (front), 180° (back)
+            fisheye_img = py360convert.e2p(
                 img,
-                fov_deg=(fov_deg, fov_deg),
+                fov_deg=(fov_deg, fov_deg),  # 180° FOV for fisheye
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
             )
             output_path = os.path.join(
                 output_dir,
-                f"{os.path.splitext(os.path.basename(image_path))[0]}_view_{i}.jpg"
+                f"{os.path.splitext(os.path.basename(image_path))[0]}_fisheye_{i}.jpg"
             )
-            cv2.imwrite(output_path, perspective_img)
+            cv2.imwrite(output_path, fisheye_img)
             output_paths.append(output_path)
-            logger.debug(f"Generated perspective image: {output_path}")
+            logger.debug(f"Generated fisheye image: {output_path}")
         return True, output_paths
     except Exception as e:
         logger.error(f"Failed to split equirectangular image {image_path}: {str(e)}")
         return False, []
 
-def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, output_size=960):
-    """Split an equirectangular mask into perspective masks."""
+def split_equirectangular_mask(mask_path, output_dir, num_views=2, fov_deg=180, output_size=960):
+    """Split an equirectangular mask into two fisheye masks."""
     try:
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
@@ -282,46 +282,45 @@ def split_equirectangular_mask(mask_path, output_dir, num_views=8, fov_deg=50, o
             logger.warning(f"Mask {mask_path} is not 2:1 aspect ratio ({w}x{h})")
         output_paths = []
         for i in range(num_views):
-            yaw = (360.0 / num_views) * i
-            perspective_mask = py360convert.e2p(
+            yaw = 180.0 * i  # 0° (front), 180° (back)
+            fisheye_mask = py360convert.e2p(
                 mask,
-                fov_deg=(fov_deg, fov_deg),
+                fov_deg=(fov_deg, fov_deg),  # 180° FOV for fisheye
                 u_deg=yaw,
                 v_deg=0,
                 out_hw=(output_size, output_size)
             )
-            perspective_mask = (perspective_mask > 0).astype(np.uint8) * 255
+            fisheye_mask = (fisheye_mask > 0).astype(np.uint8) * 255
             output_path = os.path.join(
                 output_dir,
-                f"{os.path.splitext(os.path.basename(mask_path))[0]}_view_{i}.png"
+                f"{os.path.splitext(os.path.basename(mask_path))[0]}_fisheye_{i}.png"
             )
-            cv2.imwrite(output_path, perspective_mask)
+            cv2.imwrite(output_path, fisheye_mask)
             output_paths.append(output_path)
-            logger.debug(f"Generated perspective mask: {output_path}")
+            logger.debug(f"Generated fisheye mask: {output_path}")
         return True, output_paths
     except Exception as e:
         logger.error(f"Failed to split equirectangular mask {mask_path}: {str(e)}")
         return False, []
 
-def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=8):
+def generate_image_pairs(image_list, eq_to_persp, output_path, num_views=2):
+    """Generate pairs for two fisheye images per equirectangular frame."""
     pairs = []
     for eq_img, data in eq_to_persp.items():
-        persp_imgs = data['images']
-        for i in range(num_views):
-            view_i = persp_imgs[i]
-            view_prev = persp_imgs[(i - 1) % num_views]
-            view_next = persp_imgs[(i + 1) % num_views]
-            pairs.append((view_i, view_prev))
-            pairs.append((view_i, view_next))
+        fisheye_imgs = data['images']  # Two fisheye images
+        # Intra-image matching (front and back)
+        pairs.append((fisheye_imgs[0], fisheye_imgs[1]))
+        # Sequential matching
         eq_idx = int(eq_img.split('_')[1].split('.')[0])
-        for offset in [-2, -1, 1, 2]:  # More sequential pairs
+        for offset in [-3, -2, -1, 1, 2, 3]:
             neighbor_idx = eq_idx + offset
             neighbor_img = f"frame_{neighbor_idx:04d}.jpg"
             if neighbor_img in eq_to_persp:
-                for i in range(num_views):
-                    view_i = persp_imgs[i]
-                    neighbor_view_i = eq_to_persp[neighbor_img]['images'][i]
-                    pairs.append((view_i, neighbor_view_i))
+                neighbor_fisheye_imgs = eq_to_persp[neighbor_img]['images']
+                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[0]))  # Front-front
+                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[1]))  # Back-back
+                pairs.append((fisheye_imgs[0], neighbor_fisheye_imgs[1]))  # Front-back
+                pairs.append((fisheye_imgs[1], neighbor_fisheye_imgs[0]))  # Back-front
     with open(output_path, 'w') as f:
         for img1, img2 in pairs:
             f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -427,7 +426,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
-    # Run SfM with COLMAP
+  # Run SfM with COLMAP
     sfm_dir = os.path.join(output_dir, 'sfm')
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}")
     try:
@@ -439,10 +438,10 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             matches=Path(match_path),
             camera_mode='PER_FOLDER',
             image_options={
-                'camera_model': 'PINHOLE',
-                'camera_params': f"{960/(2*np.tan(np.deg2rad(50)/2))},480,480,0"
+                'camera_model': 'OPENCV_FISHEYE',
+                'camera_params': '960,960,480,480,0.1,0.05,0.01,0.001'  # fx,fy,cx,cy,k1,k2,k3,k4
             },
-            skip_geometric_verification=True  # Bypass SIFT verification
+            verbose=True
         )
         logger.debug(f"SfM completed: {sfm_dir}")
     except Exception as e:
