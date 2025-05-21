@@ -627,15 +627,18 @@ def process_video():
         logger.debug(f"Generated new session_id: {session_id}")
     else:
         logger.debug(f"Using provided session_id: {session_id}")
-    request_id = session.get(f'request_id_{session_id}', str(uuid.uuid4()))
-    session[f'request_id_{session_id}'] = request_id
+    # Use existing request_id if session_id is reused, else generate new
+    request_id = session.get(f'request_id_{session_id}')
+    if not request_id:
+        request_id = str(uuid.uuid4())
+        session[f'request_id_{session_id}'] = request_id
+        # Clean up old requests only for new sessions
+        if not cleanup_old_requests(request_id):
+            logger.error("Failed to clean up old request directories")
+            response = {"status": "error", "message": "Failed to clean up old request directories", "session_id": session_id}
+            logger.debug(f"Sending response: {response}")
+            return response, 500
     logger.debug(f"Session state: request_id_{session_id} = {request_id}")
-
-    if not cleanup_old_requests(request_id):
-        logger.error("Failed to clean up old request directories")
-        response = {"status": "error", "message": "Failed to clean up old request directories", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
 
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
