@@ -615,6 +615,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
     logger.debug("HLoc processing completed successfully")
     return True, ""
 @app.route('/process-video', methods=['POST'])
+
 def process_video():
     logger.debug("Received POST request to /process-video")
     logger.debug(f"Request files: {list(request.files.keys())}")
@@ -630,6 +631,12 @@ def process_video():
     session[f'request_id_{session_id}'] = request_id
     logger.debug(f"Session state: request_id_{session_id} = {request_id}")
 
+    if not cleanup_old_requests(request_id):
+        logger.error("Failed to clean up old request directories")
+        response = {"status": "error", "message": "Failed to clean up old request directories", "session_id": session_id}
+        logger.debug(f"Sending response: {response}")
+        return response, 500
+
     base_dir = os.path.join('/app/colmap_project', request_id)
     video_dir = os.path.join(base_dir, 'video')
     images_dir = os.path.join(base_dir, 'images')
@@ -641,11 +648,7 @@ def process_video():
     hloc_dir = os.path.join(base_dir, 'hloc')
     mapping_json_path = os.path.join(base_dir, 'eq_to_persp.json')
 
-    if not cleanup_old_requests(request_id):
-        logger.error("Failed to clean up old request directories")
-        response = {"status": "error", "message": "Failed to clean up old request directories", "session_id": session_id}
-        logger.debug(f"Sending response: {response}")
-        return response, 500
+    
 
     try:
         os.makedirs(video_dir, exist_ok=True)
