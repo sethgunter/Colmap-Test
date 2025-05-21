@@ -452,7 +452,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         logger.error(f"Matching failed: {str(e)}\n{traceback.format_exc()}")
         return False, f"Matching failed: {str(e)}"
 
-    # Run SfM with COLMAP, enforcing intra-frame constraints
+    # Run SfM with COLMAP, enforcing intra-frame camera rigs
     sfm_dir = os.path.join(output_dir, 'sfm')
     database_path = Path(database_path)
     logger.debug(f"Starting SfM: sfm_dir={sfm_dir}, database_path={database_path}")
@@ -467,35 +467,31 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode=pycolmap.CameraMode.PER_FOLDER
         )
 
-        # Add intra-frame constraints
+        # Define camera rigs for each frame
         image_ids = reconstruction.get_image_ids(database_path)
         db = COLMAPDatabase.connect(database_path)
 
-        # Define yaw offsets for views
+        # Define yaw offsets and relative poses for views (Z-up yaw, pending confirmation)
         view_yaw_offsets = {
-            'front': 0.0,  # 0° yaw
+            'front': 0.0,   # 0° yaw
             'right': 90.0,  # 90° yaw
             'back': 180.0,  # 180° yaw
-            'left': 270.0,  # 270° yaw
+            'left': 270.0   # 270° yaw
+        }
+        view_relative_poses = {
+            'front': ([1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),  # qw, qx, qy, qz; tx, ty, tz
+            'right': ([0.7071, 0.0, 0.7071, 0.0], [0.0, 0.0, 0.0]),
+            'back': ([0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0]),
+            'left': ([-0.7071, 0.0, 0.7071, 0.0], [0.0, 0.0, 0.0])
         }
 
-        # Set minimal priors for all images using SQL
-        for img_name, img_id in image_ids.items():
-            prior_q = [1.0, 0.0, 0.0, 0.0]  # Neutral rotation
-            prior_t = [0.0, 0.0, 0.0]  # No position assumption
-            db.execute(
-                "UPDATE images SET prior_qw = ?, prior_qx = ?, prior_qy = ?, prior_qz = ?, "
-                "prior_tx = ?, prior_ty = ?, prior_tz = ? WHERE image_id = ?",
-                (prior_q[0], prior_q[1], prior_q[2], prior_q[3],
-                 prior_t[0], prior_t[1], prior_t[2], img_id)
-            )
-
-        # Add intra-frame constraints using eq_to_persp mapping
+        # Create rigs for each frame
         for eq_img, data in eq_to_persp.items():
             persp_imgs = data['images']  # List of perspective images for this frame
             if len(persp_imgs) != 4:
                 logger.warning(f"Frame {eq_img} has {len(persp_imgs)} views, expected 4")
                 continue
+
             # Map perspective images to their views
             view_map = {}
             for img_path in persp_imgs:
@@ -506,29 +502,50 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             if len(view_map) != 4:
                 logger.warning(f"Frame {eq_img} missing views: {view_map.keys()}")
                 continue
-            # Get image IDs for this frame's views
+
+            # Get image IDs and camera IDs for this frame's views
             frame_image_ids = {}
+            frame_camera_ids = {}
             for view, img_name in view_map.items():
                 if img_name not in image_ids:
                     logger.warning(f"Image {img_name} not found in database for frame {eq_img}")
                     break
-                frame_image_ids[view] = image_ids[img_name]
+                image_id = image_ids[img_name]
+                # Query camera_id from images table
+                ret = db.execute("SELECT camera_id FROM images WHERE image_id = ?", (image_id,)).fetchone()
+                if ret is None:
+                    logger.warning(f"No camera_id for image {img_name} in frame {eq_img}")
+                    break
+                camera_id = ret[0]
+                frame_image_ids[view] = image_id
+                frame_camera_ids[view] = camera_id
             else:  # Only proceed if all views are found
-                # Add constraints between all pairs of views
-                for view1 in view_yaw_offsets:
-                    for view2 in view_yaw_offsets:
-                        if view1 >= view2:  # Avoid duplicate pairs
-                            continue
-                        yaw_diff = view_yaw_offsets[view2] - view_yaw_offsets[view1]
-                        if yaw_diff < 0:
-                            yaw_diff += 360.0
-                        yaw_rad = math.radians(yaw_diff)
-                        # Relative quaternion: [cos(θ/2), 0, sin(θ/2), 0]
-                        rel_q = [math.cos(yaw_rad/2), 0.0, math.sin(yaw_rad/2), 0.0]
-                        rel_t = [0.0, 0.0, 0.0]  # Same position
-                        img_id1 = frame_image_ids[view1]
-                        img_id2 = frame_image_ids[view2]
-                        db.add_two_view_geometry(img_id1, img_id2, qvec=rel_q, tvec=rel_t, matches=np.empty((0, 2), dtype=np.int32))
+                # Insert rig
+                db.execute("INSERT INTO rigs DEFAULT VALUES")
+                rig_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                # Insert rig cameras
+                rig_camera_ids = {}
+                for view in ['front', 'right', 'back', 'left']:
+                    qvec, tvec = view_relative_poses[view]
+                    camera_id = frame_camera_ids[view]
+                    db.execute(
+                        "INSERT INTO rig_cameras (rig_id, camera_id, qw, qx, qy, qz, tx, ty, tz) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (rig_id, camera_id, qvec[0], qvec[1], qvec[2], qvec[3], tvec[0], tvec[1], tvec[2])
+                    )
+                    rig_camera_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    rig_camera_ids[view] = rig_camera_id
+
+                # Update images with rig_id and rig_camera_id
+                for view, image_id in frame_image_ids.items():
+                    rig_camera_id = rig_camera_ids[view]
+                    db.execute(
+                        "UPDATE images SET rig_id = ?, rig_camera_id = ? WHERE image_id = ?",
+                        (rig_id, rig_camera_id, image_id)
+                    )
+
+        # Commit database changes
         db.commit()
         db.close()
 
