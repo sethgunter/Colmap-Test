@@ -336,6 +336,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         import numpy as np
         import math
         import json
+        import glob
         logger.debug("Successfully imported HLoc modules")
     except ImportError as e:
         logger.error(f"Failed to import HLoc: {str(e)}")
@@ -426,6 +427,12 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
                             for j in range(num_views):
                                 if i != j:  # Exclude same view
                                     pairs.append((persp_imgs[i], neighbor_persp_imgs[j]))
+        # Optional: Add intra-frame pairs if registration is low (<160/176)
+        # for eq_img, data in eq_to_persp.items():
+        #     persp_imgs = data['images']
+        #     for i in range(num_views):
+        #         for j in range(i+1, num_views):
+        #             pairs.append((persp_imgs[i], persp_imgs[j]))
         with open(pairs_path, 'w') as f:
             for img1, img2 in pairs:
                 f.write(f"{os.path.basename(img1)} {os.path.basename(img2)}\n")
@@ -467,9 +474,38 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
             camera_mode=pycolmap.CameraMode.PER_FOLDER
         )
 
-        # Define camera rigs for each frame
-        image_ids = reconstruction.get_image_ids(database_path)
+        # Create rigs and rig_cameras tables
         db = COLMAPDatabase.connect(database_path)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS rigs ("
+            "    rig_id INTEGER PRIMARY KEY AUTOINCREMENT"
+            ")"
+        )
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS rig_cameras ("
+            "    rig_camera_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    rig_id INTEGER NOT NULL,"
+            "    camera_id INTEGER NOT NULL,"
+            "    qw REAL NOT NULL,"
+            "    qx REAL NOT NULL,"
+            "    qy REAL NOT NULL,"
+            "    qz REAL NOT NULL,"
+            "    tx REAL NOT NULL,"
+            "    ty REAL NOT NULL,"
+            "    tz REAL NOT NULL,"
+            "    FOREIGN KEY(rig_id) REFERENCES rigs(rig_id),"
+            "    FOREIGN KEY(camera_id) REFERENCES cameras(camera_id)"
+            ")"
+        )
+        # Add rig_id and rig_camera_id columns to images table if not present
+        try:
+            db.execute("ALTER TABLE images ADD COLUMN rig_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            db.execute("ALTER TABLE images ADD COLUMN rig_camera_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Define yaw offsets and relative poses for views (Z-up yaw, pending confirmation)
         view_yaw_offsets = {
@@ -486,6 +522,7 @@ def run_hloc(images_dir, database_path, output_dir, mapping_json_path, masks_dir
         }
 
         # Create rigs for each frame
+        image_ids = reconstruction.get_image_ids(database_path)
         for eq_img, data in eq_to_persp.items():
             persp_imgs = data['images']  # List of perspective images for this frame
             if len(persp_imgs) != 4:
